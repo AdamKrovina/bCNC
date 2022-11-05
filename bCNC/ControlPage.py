@@ -395,7 +395,7 @@ class DROFrame(CNCRibbon.PageFrame):
         self.xyzero = Button(
             self,
             text=_("XY=0"),
-            command=self.setXY0,
+            command=self.doNothing,
             activebackground="LightYellow",
             padx=2,
             pady=1,
@@ -411,7 +411,7 @@ class DROFrame(CNCRibbon.PageFrame):
         self.xyzzero = Button(
             self,
             text=_("XYZ=0"),
-            command=self.setXYZ0,
+            command=self.doNothing,
             activebackground="LightYellow",
             padx=2,
             pady=1,
@@ -601,6 +601,8 @@ class DROFrame(CNCRibbon.PageFrame):
         messagebox.showinfo(_("State: {}").format(state), msg, parent=self)
 
 
+    def doNothing(self, event=None):
+        return
 # =============================================================================
 # DRO Frame ABC
 # =============================================================================
@@ -1013,12 +1015,10 @@ class ControlFrame(CNCRibbon.PageExLabelFrame):
         self.addWidget(b)
 
         col += 1
-        b = Utils.UserButton(
+        b = Button(
             frame,
-            self.app,
-            0,
             text=Unicode.LARGE_CIRCLE,
-            command=self.go2origin,
+            command=self.doNothing,
             width=width,
             height=height,
             activebackground="LightYellow",
@@ -1367,7 +1367,10 @@ class ControlFrame(CNCRibbon.PageExLabelFrame):
         if event is not None and not self.acceptKey():
             return
         self.setStep(self.step3, self.step2)
-
+        
+    # ----------------------------------------------------------------------
+    def doNothing(self, event=None):
+        return
 
 # =============================================================================
 # abc ControlFrame
