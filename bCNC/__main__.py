@@ -194,8 +194,8 @@ def main():
     if serial is None:
         application.showSerialError()
 
-    if Updates.need2Check():
-        application.checkUpdates()
+    #if Updates.need2Check():
+        #application.checkUpdates()
 
     if run:
         application.run()
