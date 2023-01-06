@@ -2035,27 +2035,39 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         self.addWidget(self.g92)
 
 
+        from functools import partial
+        self.tlo1 = []
+        tloRowCnt = 4
+        tloCount = tloRowCnt * 2 # make sure the number of tlos is even
+        for i in range(tloCount):
 
 # TLO1
-        row += 1
-        col = 0
-        Label(f, text=_("TLO 1:")).grid(row=row, column=col, sticky=E)
-
-        col += 1
-        self.tlo1 = tkExtra.FloatEntry(
-            f,
-            background=tkExtra.GLOBAL_CONTROL_BACKGROUND,
-            disabledforeground="Black",
-            width=5,
-        )
-        self.tlo1.grid(row=row, column=col, sticky=EW)
-        tkExtra.Balloon.set(self.tlo1, _("Tool length offset [G43.1#]"))
-        self.addWidget(self.tlo1)
-
-        col += 1
-        b = Button(f, text=_("set"), command=self.setTLO1, padx=1, pady=1)
-        b.grid(row=row, column=col, columnspan=2, sticky=W)
-        self.addWidget(b)
+            row += 1
+            if(i < tloCount/2):
+                col = 0
+            else:
+                col = 3
+            if(i == tloCount/2): # happens only once during the cycle
+                row -= int(tloCount/2)
+            Label(f, text=_(f"TLO {i+1}:")).grid(row=row, column=col, sticky=E)
+    
+            col += 1
+            self.tlo1.append(
+                tkExtra.FloatEntry(
+                    f,
+                    background=tkExtra.GLOBAL_CONTROL_BACKGROUND,
+                    disabledforeground="Black",
+                    width=5,
+                )
+            )
+            self.tlo1[i].grid(row=row, column=col, sticky=EW)
+            tkExtra.Balloon.set(self.tlo1[i], _("Tool length offset [G43.1#]"))
+            self.addWidget(self.tlo1[i])
+    
+            col += 1
+            b = Button(f, text=_("set"), command=partial(self.setTLO1, i), padx=1, pady=1)
+            b.grid(row=row, column=col, columnspan=2, sticky=W)
+            self.addWidget(b)
 
 
 
@@ -2270,9 +2282,9 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             pass
         
     # ----------------------------------------------------------------------
-    def setTLO1(self, event=None):
+    def setTLO1(self, index, event=None):
         try:
-            tlo = float(self.tlo1.get())
+            tlo = float(self.tlo1[index].get())
             self.sendGCode(f"G43.1Z{tlo:g}")
             self.app.mcontrol.viewParameters()
             self.event_generate("<<CanvasFocus>>")
