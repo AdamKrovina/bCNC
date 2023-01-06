@@ -2034,6 +2034,33 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         tkExtra.Balloon.set(self.g92, _("Set position [G92 X# Y# Z#]"))
         self.addWidget(self.g92)
 
+
+
+# TLO1
+        row += 1
+        col = 0
+        Label(f, text=_("TLO 1:")).grid(row=row, column=col, sticky=E)
+
+        col += 1
+        self.tlo1 = tkExtra.FloatEntry(
+            f,
+            background=tkExtra.GLOBAL_CONTROL_BACKGROUND,
+            disabledforeground="Black",
+            width=5,
+        )
+        self.tlo1.grid(row=row, column=col, sticky=EW)
+        tkExtra.Balloon.set(self.tlo1, _("Tool length offset [G43.1#]"))
+        self.addWidget(self.tlo1)
+
+        col += 1
+        b = Button(f, text=_("set"), command=self.setTLO1, padx=1, pady=1)
+        b.grid(row=row, column=col, columnspan=2, sticky=W)
+        self.addWidget(b)
+
+
+
+
+
         # ---
         f.grid_columnconfigure(1, weight=1)
         f.grid_columnconfigure(4, weight=1)
@@ -2236,6 +2263,16 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
     def setTLO(self, event=None):
         try:
             tlo = float(self.tlo.get())
+            self.sendGCode(f"G43.1Z{tlo:g}")
+            self.app.mcontrol.viewParameters()
+            self.event_generate("<<CanvasFocus>>")
+        except ValueError:
+            pass
+        
+    # ----------------------------------------------------------------------
+    def setTLO1(self, event=None):
+        try:
+            tlo = float(self.tlo1.get())
             self.sendGCode(f"G43.1Z{tlo:g}")
             self.app.mcontrol.viewParameters()
             self.event_generate("<<CanvasFocus>>")
