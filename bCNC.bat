@@ -1,6 +1,4 @@
-@echo off
-set DIR=%~dp0
-set DIR=%DIR%bCNC\
-set PYTHONPATH=%DIR%lib;%DIR%plugins;%PYTHONPATH%
-cd %~dp0
+set root=%HOMEPATH%\anaconda3
+call %root%\Scripts\activate.bat %root%
+cd C:\Users\adam\Documents\Github\bCNC
 start python -m bCNC
