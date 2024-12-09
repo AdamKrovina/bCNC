@@ -1828,7 +1828,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         # ===
         col, row = 0, 0
         f2 = Frame(f)
-        f2.grid(row=row, column=col, columnspan=5, sticky=EW)
+        f2.grid(row=row, column=col, columnspan=9, sticky=EW)
         for p, w in enumerate(WCS):
             col += 1
             b = Radiobutton(
@@ -1857,7 +1857,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             f,
             True,
             command=self.distanceChange,
-            width=5,
+            width=1,
             background=tkExtra.GLOBAL_CONTROL_BACKGROUND,
         )
         self.distance.fill(sorted(DISTANCE_MODE.values()))
@@ -1878,7 +1878,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             f,
             True,
             command=self.unitsChange,
-            width=5,
+            width=1,
             background=tkExtra.GLOBAL_CONTROL_BACKGROUND,
         )
         self.units.fill(sorted(UNITS.values()))
@@ -1914,7 +1914,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             f,
             True,
             command=self.planeChange,
-            width=5,
+            width=1,
             background=tkExtra.GLOBAL_CONTROL_BACKGROUND,
         )
         self.plane.fill(sorted(PLANE.values()))
@@ -1935,7 +1935,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             f,
             background=tkExtra.GLOBAL_CONTROL_BACKGROUND,
             disabledforeground="Black",
-            width=5,
+            width=1,
         )
         self.feedRate.grid(row=row, column=col, sticky=EW)
         self.feedRate.bind("<Return>", self.setFeedRate)
@@ -1957,7 +1957,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             f,
             True,
             command=self.feedModeChange,
-            width=5,
+            width=1,
             background=tkExtra.GLOBAL_CONTROL_BACKGROUND,
         )
         self.feedMode.fill(sorted(FEED_MODE.values()))
@@ -1977,7 +1977,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             f,
             background=tkExtra.GLOBAL_CONTROL_BACKGROUND,
             disabledforeground="Black",
-            width=5,
+            width=1,
         )
         self.tlo.grid(row=row, column=col, sticky=EW)
         self.tlo.bind("<Return>", self.setTLO)
@@ -2003,45 +2003,39 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
 
         from functools import partial
         self.tlo1 = []
+        tloColCnt = 3
         tloRowCnt = 4
-        tloCount = tloRowCnt * 2 # make sure the number of tlos is even
-        for i in range(tloCount):
+        tloCount = tloColCnt*tloRowCnt
+        tloNum = 0;
+        row = row+1
+        for col in range(tloColCnt):
+            for row_i in range(tloRowCnt):
+                
 
-# TLO1
-            row += 1
-            if(i < tloCount/2):
-                col = 0
-            else:
-                col = 3
-            if(i == tloCount/2): # happens only once during the cycle
-                row -= int(tloCount/2)
-            Label(f, text=_(f"TLO {i+1}:")).grid(row=row, column=col, sticky=E)
-    
-            col += 1
-            self.tlo1.append(
-                tkExtra.FloatEntry(
-                    f,
-                    background=tkExtra.GLOBAL_CONTROL_BACKGROUND,
-                    disabledforeground="Black",
-                    width=5,
+                Label(f, text=_(f"TLO {tloNum+1}:")).grid(row=row+row_i, column=col*3, sticky=E)
+        
+                self.tlo1.append(
+                    tkExtra.FloatEntry(
+                        f,
+                        background=tkExtra.GLOBAL_CONTROL_BACKGROUND,
+                        disabledforeground="Black",
+                        width=2,
+                    )
                 )
-            )
-            self.tlo1[i].grid(row=row, column=col, sticky=EW)
-            tkExtra.Balloon.set(self.tlo1[i], _("Tool length offset [G43.1#]"))
-            self.addWidget(self.tlo1[i])
-    
-            col += 1
-            b = Button(f, text=_("set"), command=partial(self.setTLO1, i), padx=1, pady=1)
-            b.grid(row=row, column=col, columnspan=2, sticky=W)
-            self.addWidget(b)
+                self.tlo1[tloNum].grid(row=row+row_i, column=col*3+1, sticky=EW)
+                f.grid_columnconfigure(col*3+1, weight=2)
+                tkExtra.Balloon.set(self.tlo1[tloNum], _("Tool length offset [G43.1#]"))
+                self.addWidget(self.tlo1[tloNum])
+        
+                b = Button(f, text=_("set"), command=partial(self.setTLO1, tloNum), padx=1, pady=1)
+                b.grid(row=row+row_i, column=col*3+2, columnspan=1, sticky=W)
+                self.addWidget(b)
 
-
+                tloNum = tloNum + 1 
 
 
 
         # ---
-        f.grid_columnconfigure(1, weight=1)
-        f.grid_columnconfigure(4, weight=1)
 
         # Spindle
         f = Frame(self())
