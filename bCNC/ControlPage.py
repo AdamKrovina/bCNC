@@ -85,17 +85,17 @@ class ConnectionGroup(CNCRibbon.ButtonMenuGroup):
         self.grid2rows()
 
         # ---
-        col, row = 0, 0
+        col, row = 0, 1
         b = Ribbon.LabelButton(
             self.frame,
             image=Utils.icons["home32"],
             text=_("Home"),
-            compound=TOP,
+            compound=BOTTOM,
             anchor=W,
             command=app.home,
             background=Ribbon._BACKGROUND,
         )
-        b.grid(row=row, column=col, rowspan=3, padx=0, pady=0, sticky=NSEW)
+        b.grid(row=row, column=col, rowspan=2, padx=0, pady=0, sticky=NSEW)
         tkExtra.Balloon.set(b, _("Perform a homing cycle [$H] now"))
         self.addWidget(b)
 
