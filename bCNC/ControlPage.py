@@ -1991,7 +1991,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         self.addWidget(b)
         
 #        col += 1
-#        b = Button(f, text=_("Load TLOs"), command=self.loadConfig(), padx=1, pady=1)
+#        b = Button(f, text=_("Save TLOs"), command=self.saveConfig, padx=1, pady=1)
 #        b.grid(row=row, column=col, columnspan=2, sticky=W)
 #        self.addWidget(b)
 
@@ -2009,7 +2009,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         from functools import partial
         self.tlo1 = []
         tloColCnt = 3
-        tloRowCnt = 2
+        tloRowCnt = 4
         tloCount = tloColCnt*tloRowCnt
         tloNum = 0;
         row = row+1

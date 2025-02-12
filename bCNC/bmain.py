@@ -296,6 +296,8 @@ class Application(Tk, Sender):
         self.terminal = Page.frames["Terminal"].terminal
         self.buffer = Page.frames["Terminal"].buffer
 
+        self.gstate.loadConfig()
+        
         # XXX FIXME Do we need it or I can takes from Page every time?
         self.autolevel = Page.frames["Probe:Autolevel"]
 
