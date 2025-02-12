@@ -1989,6 +1989,11 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         b = Button(f, text=_("set"), command=self.setTLO, padx=1, pady=1)
         b.grid(row=row, column=col, columnspan=2, sticky=W)
         self.addWidget(b)
+        
+#        col += 1
+#        b = Button(f, text=_("Load TLOs"), command=self.loadConfig(), padx=1, pady=1)
+#        b.grid(row=row, column=col, columnspan=2, sticky=W)
+#        self.addWidget(b)
 
         # g92
         col += 1
@@ -2004,7 +2009,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         from functools import partial
         self.tlo1 = []
         tloColCnt = 3
-        tloRowCnt = 4
+        tloRowCnt = 2
         tloCount = tloColCnt*tloRowCnt
         tloNum = 0;
         row = row+1
@@ -2250,7 +2255,21 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             self.event_generate("<<CanvasFocus>>")
         except ValueError:
             pass
-
+        
+    # ----------------------------------------------------------------------
+    def saveConfig(self):
+        print("debug adam")
+        for i in range(len(self.tlo1)):
+            print(self.tlo1[i].get())
+            Utils.setFloat("Control", "TLO%d" % i, self.tlo1[i].get())
+            
+    # ----------------------------------------------------------------------        
+    def loadConfig(self):
+        print("debug adam")
+        for i in range(len(self.tlo1)):
+            print(Utils.getFloat("Control", "TLO%d" % i))
+            self.tlo1[i].set(Utils.getFloat("Control", "TLO%d" % i))  
+        
     # ----------------------------------------------------------------------
     def setTool(self, event=None):
         pass
