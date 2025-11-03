@@ -781,7 +781,30 @@ class CNC:
             elif g[0] == "S":
                 CNC.vars["rpm"] = float(g[1:])
             elif g[0] == "T":
-                CNC.vars["tool"] = int(g[1:])
+                # Update current tool and persist to configuration so that
+                # the selected tool survives restarts. Wrap in try/except
+                # to avoid pulling heavy deps at module import time.
+                try:
+                    CNC.vars["tool"] = int(g[1:])
+                except Exception:
+                    # if parsing fails, leave tool unchanged
+                    try:
+                        CNC.vars["tool"] = int(float(g[1:]))
+                    except Exception:
+                        pass
+                try:
+                    # Save current tool to ATC section so it is loaded on startup
+                    import Utils
+
+                    Utils.setStr("ATC", "current_tool", str(CNC.vars.get("tool", "")))
+                    try:
+                        Utils.saveConfiguration()
+                    except Exception:
+                        # Non-fatal: if saving fails, continue without raising
+                        pass
+                except Exception:
+                    # Utils not available or other error; ignore
+                    pass
             else:
                 var = MODAL_MODES.get(g)
                 if var is not None:
@@ -1836,24 +1859,40 @@ class CNC:
         lines = []
         # remember state and populate variables,
         # FIXME: move to ./controllers/_GenericController.py
-        lines.append(
-            "$g"
-        )
+        lines.append("$g")
         lines.append("m5")  # stop spindle
         lines.append("%wait")
         lines.append("%_x,_y,_z = wx,wy,wz")  # remember position
+
+        if CNC.toolPolicy == 5:  # ATC
+            if CNC.comment:
+                lines.append(f"%msg Tool change T{int(self.tool):02} ({CNC.comment})")
+            else:
+                lines.append(f"%msg Tool change T{int(self.tool):02}")
+            lines.append("g53 g0 z[toolchangez]")  # First raise Z for safety
+            lines.append(f"M6 T{int(self.tool):02}")  # Execute ATC change
+            lines.append("%wait")
+            # Restore state  
+            lines.append("g90")  # restore mode
+            lines.append("g0 x[_x] y[_y]")  # ... x,y position
+            lines.append("g0 z[_z]")  # ... z position
+            lines.append("f[feed] [spindle]")  # ... feed and spindle
+            lines.append("g4 p5")  # wait 5s for spindle to speed up
+            self._lastTool = self.tool
+            return lines
+
+        # Non-ATC tool changes
         lines.append("g53 g0 z[toolchangez]")
         lines.append("g53 g0 x[toolchangex] y[toolchangey]")
         lines.append("%wait")
 
         if CNC.comment:
-            lines.append(
-                f"%msg Tool change T{int(self.tool):02} ({CNC.comment})")
+            lines.append(f"%msg Tool change T{int(self.tool):02} ({CNC.comment})")
         else:
             lines.append(f"%msg Tool change T{int(self.tool):02}")
         lines.append("m0")  # feed hold
 
-        if CNC.toolPolicy < 4:
+        if CNC.toolPolicy < 4:  # Handle probing
             lines.append("g53 g0 x[toolprobex] y[toolprobey]")
             lines.append("g53 g0 z[toolprobez]")
 

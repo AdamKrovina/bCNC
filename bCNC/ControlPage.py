@@ -4,6 +4,7 @@
 # Date: 18-Jun-2015
 
 import math
+import time
 from tkinter import (
     TclError,
     FALSE,
@@ -2269,10 +2270,360 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         for i in range(len(self.tlo1)):
             print(Utils.getFloat("Control", "TLO%d" % i))
             self.tlo1[i].set(Utils.getFloat("Control", "TLO%d" % i))  
+        # load ATC holder positions and setter (optional)
+        self.loadATCConfig()
+        # If a current tool was persisted in config, restore it so the
+        # application knows which tool is presently loaded (prevents crash).
+        try:
+            cur = Utils.getStr("ATC", "current_tool", "")
+            if cur:
+                CNC.vars["tool"] = int(cur)
+                try:
+                    self.toolEntry.set(CNC.vars.get("tool", 0))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # ----------------------------------------------------------------------
+    def loadATCConfig(self):
+        # Load ATC configuration: holder positions and setter position
+        # Holder positions: ATC.holderX1 / ATC.holderY1, holderX2/Y2 ... (1-based)
+        # Setter position: ATC.setterX / ATC.setterY / ATC.setterZ
+        # Tolerance: ATC.tol
+        try:
+            holders = []
+            for i in range(len(self.tlo1)):
+                try:
+                    x = Utils.getFloat("ATC", f"holderX{i+1}")
+                    y = Utils.getFloat("ATC", f"holderY{i+1}")
+                except Exception:
+                    x = None
+                    y = None
+                holders.append((x, y))
+            self.atc_holders = holders
+        except Exception:
+            self.atc_holders = []
+
+        try:
+            sx = Utils.getFloat("ATC", "setterX", Utils.getFloat("Probe", "toolprobex", 0.0))
+        except Exception:
+            sx = Utils.getFloat("Probe", "toolprobex", 0.0)
+        try:
+            sy = Utils.getFloat("ATC", "setterY", Utils.getFloat("Probe", "toolprobey", 0.0))
+        except Exception:
+            sy = Utils.getFloat("Probe", "toolprobey", 0.0)
+        try:
+            sz = Utils.getFloat("ATC", "setterZ", Utils.getFloat("Probe", "toolprobez", 0.0))
+        except Exception:
+            sz = Utils.getFloat("Probe", "toolprobez", 0.0)
+        self.atc_setter = (sx, sy, sz)
+
+        self.atc_tol = Utils.getFloat("ATC", "tol", 0.5)
+
+    # ----------------------------------------------------------------------
+    def _probeMeasure(self, timeout=15.0):
+        # Run a probe sequence to measure tool on the tool setter.
+        # Returns True if probe completed and CNC.vars['prbz'] updated, else None.
+        old_prbz = CNC.vars.get("prbz", None)
+        lines = [
+            # go to probe change area and probe point (machine coords)
+            "g53 g0 z[toolchangez]",
+            "g53 g0 x[toolchangex] y[toolchangey]",
+            "g53 g0 x[toolprobex] y[toolprobey]",
+            "g53 g0 z[toolprobez]",
+            # single probe pass at configured probe feed
+            "%wait",
+            "g91 [prbcmd] f[prbfeed] z[toolprobez-mz-tooldistance]",
+            "g4 p1",
+            "%wait",
+            # export measured probe z to a global variable we can poll
+            "%global atc_prbz; atc_prbz=prbz",
+            "%update atc_prbz",
+        ]
+
+        # Run probe sequence
+        self.app.run(lines=lines)
+
+        # wait until atc_prbz or prbz changed
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            try:
+                self.app.update()
+            except Exception:
+                pass
+            # prefer explicit atc_prbz
+            if "atc_prbz" in CNC.vars and CNC.vars.get("atc_prbz") is not None:
+                return CNC.vars.get("atc_prbz")
+            if CNC.vars.get("prbz") is not None and CNC.vars.get("prbz") != old_prbz:
+                return CNC.vars.get("prbz")
+            time.sleep(0.05)
+
+        return None
         
     # ----------------------------------------------------------------------
-    def setTool(self, event=None):
-        pass
+    def setTool(self, event=None, new_tool=None):
+        # Semi-automatic ATC helper.
+        # Sequence:
+        #  1) measure current tool on tool setter (probe)
+        #  2) compare measured TLO with table self.tlo1 for current tool
+        #  3) if ok, move spindle to holder position for current tool
+        #  4) prompt user to remove tool and insert new tool
+        #  5) measure new tool on tool setter and compare with table
+        #  6) if ok, update tool number and set TLO (G43.1)
+        #print("ATC start");
+        self.app.log.put((Sender.Sender.MSG_SEND, "ATC: Starting tool change routine"))
+        #print("ATC start1");
+        # helper to persist current tool in one place
+        def _persist_tool(tool):
+            try:
+                Utils.setStr("ATC", "current_tool", str(tool))
+                Utils.saveConfiguration()
+            except Exception:
+                # Non-fatal: just continue
+                pass
+        # Allow callers to pass the desired tool programmatically
+        if new_tool is None:
+            try:
+                new_tool = int(self.toolEntry.get())
+            except Exception:
+                messagebox.showerror(_("ATC error"), _("Invalid tool number"))
+                return False
+
+        cur_tool = int(CNC.vars.get("tool", 0) or 0)
+        if cur_tool == new_tool:
+            messagebox.showinfo(_("ATC"), _("Already using requested tool"))
+            return True
+
+        # Ensure probe/toolmz info exists
+        if CNC.vars.get("toolmz", None) is None:
+            messagebox.showwarning(
+                _("ATC"),
+                _(
+                    "Reference probe value (toolmz) not set. Please run Tools->Probe->Tool->Calibrate first."
+                ),
+            )
+            return False
+
+        # measure current tool
+        measured_old = self._probeMeasure()
+        if measured_old is None:
+            messagebox.showerror(_("ATC"), _("Failed to measure current tool"))
+            return False
+
+        # compute measured TLO using probe (prbz) minus reference toolmz
+        measured_tlo_old = float(CNC.vars.get("prbz", 0.0)) - float(CNC.vars.get("toolmz", 0.0))
+
+        # expected from table (tlo1 indexed from 0, tools usually numbered from 1)
+        try:
+            expected_old = float(self.tlo1[cur_tool - 1].get())
+        except Exception:
+            expected_old = None
+
+        tol = getattr(self, "atc_tol", Utils.getFloat("ATC", "tol", 0.5))
+
+        if expected_old is None:
+            ans = messagebox.askyesno(
+                _("ATC"),
+                _(
+                    "No expected TLO for current tool in table. Continue anyway?"
+                ),
+            )
+            if not ans:
+                self.app.log.put((Sender.Sender.MSG_ERROR, "ATC: Aborted - no expected TLO for current tool"))
+                return False
+        else:
+            if abs(measured_tlo_old - expected_old) > tol:
+                ans = messagebox.askyesno(
+                    _("ATC Error"), 
+                    _("Current tool measurement {:.3f} not within tolerance {:.3f} of expected {:.3f}. Continue anyway?").format(
+                        measured_tlo_old, tol, expected_old
+                    )
+                )
+                if not ans:
+                    self.app.log.put((Sender.Sender.MSG_ERROR, "ATC: Aborted - current tool measurement out of tolerance"))
+                    return False
+
+        # move to holder position for current tool to allow removal
+        holder = None
+        if hasattr(self, "atc_holders"):
+            try:
+                holder = self.atc_holders[cur_tool - 1]
+            except Exception:
+                holder = None
+
+        if holder and holder[0] is not None and holder[1] is not None:
+            # Prefer automatic unload/load sequence using machine-specific G-code
+            # provided by the user. If anything goes wrong, fall back to the
+            # original simple holder moves.
+            try:
+                # Calculate any offsets used in the user's example (Y - 30)
+                y_minus_30 = holder[1] - 30.0
+
+                unload_lines = [
+                    "G53 G0 Z-1",
+                    f"G53 G0 X{holder[0]:g} Y{y_minus_30:g}",
+                    "G53 G0 Z-150",
+                    f"G53 G0 Y{holder[1]:g}",
+                    "G4 P0",
+                    "M106 ;release",
+                    "G4 P0.2",
+                    "G53 G0 Z-80",
+                    "G4 P0",
+                    "M107 ;clamp",
+                    "G53 G0 Z-1",
+                ]
+
+                # Send the unload sequence to the machine
+                for l in unload_lines:
+                    self.sendGCode(l)
+
+            except Exception as e:
+                # Do not perform automatic fallback. Ask user whether to try
+                # the manual fallback (original simple moves). Abort if declined.
+                try:
+                    ans = messagebox.askyesno(
+                        _("ATC"),
+                        _(
+                            "Automatic unload failed: %s\nDo you want to try the manual fallback moves to holder?"
+                        ) % str(e),
+                    )
+                except Exception:
+                    ans = False
+                if ans:
+                    # perform original simple moves as a user-approved fallback
+                    self.sendGCode("G53 G0 Z%g" % (CNC.vars.get("safe", 0)))
+                    self.sendGCode(f"G53 G0 X{holder[0]:g} Y{holder[1]:g}")
+                    self.sendGCode("G53 G0 Z%g" % (CNC.vars.get("toolchangez", CNC.vars.get("toolmz", 0))))
+                else:
+                    # user declined fallback: abort operation
+                    return False
+        else:
+            # fallback: use configured Probe change (tool change) location
+            self.sendGCode("G53 G0 Z[toolchangez]")
+            self.sendGCode("G53 G0 X[toolchangex] Y[toolchangey]")
+
+        # Try automatic load sequence to grab the new tool and measure it
+        if holder and holder[0] is not None and holder[1] is not None:
+            try:
+                # Load sequence provided by user
+                load_lines = [
+                    "G53 G0 Z-1",
+                    f"G53 G0 X{holder[0]:g} Y{holder[1]:g}",
+                    "G53 G0 Z-80",
+                    "G4 P0",
+                    "M106 ;release",
+                    "G53 G0 Z-150",
+                    "G4 P0",
+                    "M107 ;clamp",
+                    "G4 P0.4",
+                    f"G53 G0 X{holder[0]:g} Y{holder[1]-30.0:g}",
+                    "G53 G0 Z-1",
+                ]
+
+                for l in load_lines:
+                    self.sendGCode(l)
+                    self.app.log.put((Sender.Sender.MSG_SEND, "ATC: " + l))
+
+                self.app.log.put((Sender.Sender.MSG_SEND, "ATC: Starting measurement of new tool"))
+                # After automatic load, measure the new tool
+                measured_new = self._probeMeasure()
+                if measured_new is None:
+                    messagebox.showerror(_("ATC"), _("Failed to measure new tool"))
+                    return False
+
+                measured_tlo_new = float(CNC.vars.get("prbz", 0.0)) - float(CNC.vars.get("toolmz", 0.0))
+                try:
+                    expected_new = float(self.tlo1[new_tool - 1].get())
+                except Exception:
+                    expected_new = None
+
+                if expected_new is None:
+                    # No expected in table: accept measured value automatically
+                    final_tlo = measured_tlo_new
+                else:
+                    if abs(measured_tlo_new - expected_new) > tol:
+                        messagebox.showerror(
+                            _("ATC"),
+                            _("New tool measurement not within tolerance. Aborting ATC."),
+                        )
+                        return False
+                    final_tlo = expected_new
+
+                # update tool and TLO
+                CNC.vars["tool"] = new_tool
+                # send G43.1 to set TLO for new tool
+                self.sendGCode(f"G43.1Z{final_tlo:g}")
+                CNC.vars["TLO"] = final_tlo
+
+                # persist current tool (centralized)
+                _persist_tool(new_tool)
+
+                self.app.mcontrol.viewParameters()
+                # Success: do not show the manual swap messagebox
+                return True
+            except Exception as e:
+                # Do not automatically fallback. Ask user whether to proceed
+                # with manual tool replacement and measurement. Abort if declined.
+                try:
+                    ans = messagebox.askyesno(
+                        _("ATC"),
+                        _(
+                            "Automatic load failed: %s\nDo you want to try manual tool replacement and measurement?"
+                        ) % str(e),
+                    )
+                except Exception:
+                    ans = False
+                if not ans:
+                    return False
+
+                # User accepted manual fallback: prompt them to swap tools
+                messagebox.showinfo(
+                    _("ATC"),
+                    _(
+                        "Please remove the old tool and insert the new tool T%02d. Click OK when ready."
+                    ) % new_tool,
+                )
+
+                # After user replaced tool, measure new tool
+                measured_new = self._probeMeasure()
+                if measured_new is None:
+                    messagebox.showerror(_("ATC"), _("Failed to measure new tool"))
+                    return False
+
+                measured_tlo_new = float(CNC.vars.get("prbz", 0.0)) - float(CNC.vars.get("toolmz", 0.0))
+                try:
+                    expected_new = float(self.tlo1[new_tool - 1].get())
+                except Exception:
+                    expected_new = None
+
+                if expected_new is None:
+                    ans2 = messagebox.askyesno(
+                        _("ATC"),
+                        _(
+                            "No expected TLO for new tool in table. Accept measured value and continue?"
+                        ),
+                    )
+                    if not ans2:
+                        return False
+                    final_tlo = measured_tlo_new
+                else:
+                    if abs(measured_tlo_new - expected_new) > tol:
+                        messagebox.showerror(
+                            _("ATC"),
+                            _("New tool measurement not within tolerance. Aborting ATC."),
+                        )
+                        return False
+                    final_tlo = expected_new
+
+                # update tool and TLO
+                CNC.vars["tool"] = new_tool
+                self.sendGCode(f"G43.1Z{final_tlo:g}")
+                CNC.vars["TLO"] = final_tlo
+                # persist current tool (centralized)
+                _persist_tool(new_tool)
+                self.app.mcontrol.viewParameters()
+                return True
 
     # ----------------------------------------------------------------------
     def spindleControl(self, event=None):

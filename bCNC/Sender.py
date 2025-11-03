@@ -785,7 +785,7 @@ class Sender:
                     # Keep track of last feed
                     pat = FEEDPAT.match(tosend)
                     if pat is not None:
-                        self._lastFeed = pat.group(2)
+                        self._lastFeed = pat.group(2) 
 
                     # Modify sent g-code to reflect overridden feed for
                     # controllers without override support
@@ -853,12 +853,80 @@ class Sender:
                     tosend = tosend.upper()
                 if self.mcontrol.gcode_case < 0:
                     tosend = tosend.lower()
+                    # Intercept software ATC: if the line is an M6 tool change
+                    # and the CNC is configured to use ATC policy (5), then
+                    # call the GUI ATC routine instead of sending the M6 to
+                    # the controller. The GUI routine must run on the main
+                    # thread, so schedule it via self.after and wait for its
+                    # boolean result. On failure halt the run.
+                    try:
+                        if isinstance(tosend, str):
+                            m = re.match(r"^\s*[mM]0?6\b.*", tosend)
+                        else:
+                            m = None
+                    except Exception:
+                        m = None
 
-                self.serial_write(tosend)
+                    if m and getattr(CNC, "toolPolicy", None) == 5:
+                        # Try to extract tool number (Tn)
+                        tmatch = re.search(r"[tT]\s*([0-9]+)", tosend)
+                        toolnum = None
+                        if tmatch:
+                            try:
+                                toolnum = int(tmatch.group(1))
+                            except Exception:
+                                toolnum = None
 
-                self.log.put((Sender.MSG_BUFFER, tosend))
+                        if toolnum is None:
+                            self.log.put((Sender.MSG_ERROR, "ATC: M6 without tool number - aborting run"))
+                            self._stop = True
+                            self.emptyQueue()
+                            tosend = None
+                        else:
+                            # Prepare a result queue and schedule setTool on main thread
+                            resultq = Queue()
 
-                tosend = None
+                            def _call_settool(t=toolnum):
+                                try:
+                                    ctl = None
+                                    try:
+                                        ctl = self.pages.get("Control")
+                                    except Exception:
+                                        ctl = None
+                                    if ctl is None or not hasattr(ctl, "setTool"):
+                                        resultq.put(False)
+                                        return
+                                    res = ctl.setTool(None, t)
+                                    resultq.put(bool(res))
+                                except Exception:
+                                    resultq.put(False)
+
+                            try:
+                                # Schedule on the GUI/main thread
+                                self.after(0, _call_settool)
+                            except Exception:
+                                # If scheduling failed, abort
+                                resultq.put(False)
+
+                            # Wait for the result (blocking). The ATC routine is
+                            # interactive so it may take arbitrary time.
+                            success = resultq.get()
+                            if not success:
+                                self.log.put((Sender.MSG_ERROR, f"ATC: Tool change to T{toolnum} failed - stopping run"))
+                                self._stop = True
+                                self.emptyQueue()
+                                tosend = None
+                            else:
+                                self.log.put((Sender.MSG_SEND, f"ATC: Tool change to T{toolnum} handled by GUI"))
+                                # don't forward the M6 to controller
+                                tosend = None
+
+                    if tosend is not None:
+                        self.serial_write(tosend)
+
+                        self.log.put((Sender.MSG_BUFFER, tosend))
+
+                        tosend = None
                 if not self.running and t - tg > G_POLL:
                     tosend = b"$G\n"  # FIXME: move to controller specific class
                     sline.append(tosend)

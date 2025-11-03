@@ -68,6 +68,7 @@ TOOL_POLICY = [
     _("Manual Tool Change (WCS)"),  # 2
     _("Manual Tool Change (TLO)"),  # 3
     _("Manual Tool Change (NoProbe)"),  # 4
+    _("Automatic Tool Change"),  # 5
 ]
 
 TOOL_WAIT = [_("ONLY before probing"), _("BEFORE & AFTER probing")]
@@ -875,6 +876,7 @@ class ProbeFrame(CNCRibbon.PageFrame):
         Utils.setFloat("Probe", "center", self.diameter.get())
         Utils.setBool("Warning", "probe", self.warn)
 
+
     # -----------------------------------------------------------------------
     def updateProbe(self):
         try:
@@ -1373,6 +1375,9 @@ class AutolevelFrame(CNCRibbon.PageFrame):
         self.probeYbins.delete(0, END)
         self.probeYbins.insert(0, max(2, Utils.getInt("Probe", "yn", 5)))
         self.change(False)
+        
+    # Tool policy is handled by the ToolFrame/ProbePage loadConfig;
+    # AutolevelFrame does not have a toolPolicy widget so skip here.
 
     # -----------------------------------------------------------------------
     def getMargins(self, event=None):
