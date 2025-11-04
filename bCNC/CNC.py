@@ -781,30 +781,7 @@ class CNC:
             elif g[0] == "S":
                 CNC.vars["rpm"] = float(g[1:])
             elif g[0] == "T":
-                # Update current tool and persist to configuration so that
-                # the selected tool survives restarts. Wrap in try/except
-                # to avoid pulling heavy deps at module import time.
-                try:
-                    CNC.vars["tool"] = int(g[1:])
-                except Exception:
-                    # if parsing fails, leave tool unchanged
-                    try:
-                        CNC.vars["tool"] = int(float(g[1:]))
-                    except Exception:
-                        pass
-                try:
-                    # Save current tool to ATC section so it is loaded on startup
-                    import Utils
-
-                    Utils.setStr("ATC", "current_tool", str(CNC.vars.get("tool", "")))
-                    try:
-                        Utils.saveConfiguration()
-                    except Exception:
-                        # Non-fatal: if saving fails, continue without raising
-                        pass
-                except Exception:
-                    # Utils not available or other error; ignore
-                    pass
+                CNC.vars["tool"] = int(g[1:])
             else:
                 var = MODAL_MODES.get(g)
                 if var is not None:
@@ -1250,6 +1227,8 @@ class CNC:
                 return (MSG, args)
             elif cmd == "%update":
                 return (UPDATE, args)
+            elif cmd == "%call":
+                return ("CALL", args)
             elif line.startswith("%if running") and not CNC.vars["running"]:
                 # ignore if running lines when not running
                 return None
@@ -1258,6 +1237,7 @@ class CNC:
                     return compile(line[1:], "", "exec")
                 except Exception as e:
                     print("Compile line error: \n")
+                    print(line)
                     print(e)
                     return None
 
@@ -1865,14 +1845,9 @@ class CNC:
         lines.append("%_x,_y,_z = wx,wy,wz")  # remember position
 
         if CNC.toolPolicy == 5:  # ATC
-            if CNC.comment:
-                lines.append(f"%msg Tool change T{int(self.tool):02} ({CNC.comment})")
-            else:
-                lines.append(f"%msg Tool change T{int(self.tool):02}")
-            lines.append("g53 g0 z[toolchangez]")  # First raise Z for safety
-            lines.append(f"M6 T{int(self.tool):02}")  # Execute ATC change
+            lines.append(f"%call setTool T{int(self.tool):02}")
             lines.append("%wait")
-            # Restore state  
+            # Restore state
             lines.append("g90")  # restore mode
             lines.append("g0 x[_x] y[_y]")  # ... x,y position
             lines.append("g0 z[_z]")  # ... z position
