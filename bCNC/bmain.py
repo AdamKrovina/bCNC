@@ -635,7 +635,8 @@ class Application(Tk, Sender):
 
         self.canvas.cameraOff()
         Sender.quit(self)
-        self.saveConfig()
+        self.pages["Control"].persist_tool()  # Persist tool state before exiting
+        self.saveConfig() 
         self.destroy()
         if Utils.errors and Utils._errorReport:
             Utils.ReportDialog.sendErrorReport()

@@ -2266,7 +2266,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             
     # ----------------------------------------------------------------------        
     def loadConfig(self):
-        print("debug adam")
+        print("debug adam1")
         for i in range(len(self.tlo1)):
             print(Utils.getFloat("Control", "TLO%d" % i))
             self.tlo1[i].set(Utils.getFloat("Control", "TLO%d" % i))  
@@ -2276,15 +2276,20 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         # application knows which tool is presently loaded (prevents crash).
         try:
             cur = Utils.getStr("ATC", "current_tool", "")
+            print("Loading actual tool from file ")
             if cur:
-                CNC.vars["tool"] = int(cur)
                 try:
+                    print(cur)
+                    tool = int(cur)  # Validate it's a valid integer
+                    CNC.vars["tool"] = tool
                     self.toolEntry.set(CNC.vars.get("tool", 0))
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
+                except ValueError:
+                    print(f"Error: Invalid tool number in config: {cur}")
+                except Exception as e:
+                    print(f"Error setting tool entry: {str(e)}")
+        except Exception as e:
+            print(f"Could not load current tool from config: {str(e)}")
+        print("debug adam2")
     # ----------------------------------------------------------------------
     def loadATCConfig(self):
         # Load ATC configuration: holder positions and setter position
@@ -2322,20 +2327,25 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         self.atc_tol = Utils.getFloat("ATC", "tol", 0.5)
 
     # ----------------------------------------------------------------------
-    def _probeMeasure(self, timeout=15.0):
+    def _probeMeasure(self, timeout=100.0):
         # Run a probe sequence to measure tool on the tool setter.
         # Returns True if probe completed and CNC.vars['prbz'] updated, else None.
         old_prbz = CNC.vars.get("prbz", None)
         lines = [
             # go to probe change area and probe point (machine coords)
-            "g53 g0 z[toolchangez]",
-            "g53 g0 x[toolchangex] y[toolchangey]",
-            "g53 g0 x[toolprobex] y[toolprobey]",
-            "g53 g0 z[toolprobez]",
-            # single probe pass at configured probe feed
+            "G53 G0 Z-1",
             "%wait",
-            "g91 [prbcmd] f[prbfeed] z[toolprobez-mz-tooldistance]",
+            "g53 g0 x[toolprobex] y[toolprobey]",
+            "%wait",
+            "g53 g0 z[toolprobez]",
+            "%wait",
+            # single probe pass at configured probe feed
+            "g91",
+            "[prbcmd] f[70] z[-60]",
             "g4 p1",
+            "%wait",
+            "g90",
+            "G53 G0 Z-1",
             "%wait",
             # export measured probe z to a global variable we can poll
             "%global atc_prbz; atc_prbz=prbz",
@@ -2347,6 +2357,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
 
         # wait until atc_prbz or prbz changed
         t0 = time.time()
+        result = None
         while time.time() - t0 < timeout:
             try:
                 self.app.update()
@@ -2354,12 +2365,40 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                 pass
             # prefer explicit atc_prbz
             if "atc_prbz" in CNC.vars and CNC.vars.get("atc_prbz") is not None:
-                return CNC.vars.get("atc_prbz")
+                result = CNC.vars.get("atc_prbz")
+                break
             if CNC.vars.get("prbz") is not None and CNC.vars.get("prbz") != old_prbz:
-                return CNC.vars.get("prbz")
+                result = CNC.vars.get("prbz")
+                break
             time.sleep(0.05)
 
-        return None
+        # If still running, give the sender a short grace period to finish
+        # sending/executing the last queued commands before forcing run end.
+        # This helps ensure the final move (e.g., G53 G0 Z-1) has time to be
+        # transmitted and processed by the controller.
+        if getattr(self.app, "running", False):
+            try:
+                POST_RUN_TIMEOUT = 5.0  # seconds
+                t_wait_start = time.time()
+                # Wait up to POST_RUN_TIMEOUT while allowing the GUI and
+                # sender thread to process events. Poll frequently.
+                while time.time() - t_wait_start < POST_RUN_TIMEOUT and getattr(self.app, "running", False):
+                    try:
+                        self.app.update()
+                    except Exception:
+                        pass
+                    time.sleep(0.05)
+
+                # If still running after the grace period, force end the run
+                if getattr(self.app, "running", False):
+                    try:
+                        self.app.runEnded()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        return result
         
     # ----------------------------------------------------------------------
     def setTool(self, event=None, new_tool=None):
@@ -2389,7 +2428,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             except Exception:
                 messagebox.showerror(_("ATC error"), _("Invalid tool number"))
                 return False
-
+            
         cur_tool = int(CNC.vars.get("tool", 0) or 0)
         if cur_tool == new_tool:
             messagebox.showinfo(_("ATC"), _("Already using requested tool"))
@@ -2404,15 +2443,24 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                 ),
             )
             return False
+        
+        print("ATCa");
 
         # measure current tool
         measured_old = self._probeMeasure()
         if measured_old is None:
             messagebox.showerror(_("ATC"), _("Failed to measure current tool"))
             return False
+        
+        print("ATCb");
 
         # compute measured TLO using probe (prbz) minus reference toolmz
         measured_tlo_old = float(CNC.vars.get("prbz", 0.0)) - float(CNC.vars.get("toolmz", 0.0))
+
+        print("measured_old %.3f" % (measured_old))
+        print("toolmz %.2f" % float(CNC.vars.get("toolmz", 0.0)))
+        print("prbz %.3f" % float(CNC.vars.get("prbz", 0.0)))
+        print("measured_tlo_old %.3f" % (measured_tlo_old))
 
         # expected from table (tlo1 indexed from 0, tools usually numbered from 1)
         try:
@@ -2420,7 +2468,16 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         except Exception:
             expected_old = None
 
+
+        print("expected_old %.3f" % (expected_old))
+
+        print("ATCc");
+
         tol = getattr(self, "atc_tol", Utils.getFloat("ATC", "tol", 0.5))
+
+        print("cur_tool %.2f" % (cur_tool))
+
+        print("tol %.3f" % (tol))
 
         if expected_old is None:
             ans = messagebox.askyesno(
@@ -2443,6 +2500,8 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                 if not ans:
                     self.app.log.put((Sender.Sender.MSG_ERROR, "ATC: Aborted - current tool measurement out of tolerance"))
                     return False
+                
+        print("ATCd");
 
         # move to holder position for current tool to allow removal
         holder = None
@@ -2451,6 +2510,8 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                 holder = self.atc_holders[cur_tool - 1]
             except Exception:
                 holder = None
+
+        print("ATCe");
 
         if holder and holder[0] is not None and holder[1] is not None:
             # Prefer automatic unload/load sequence using machine-specific G-code
@@ -2461,22 +2522,26 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                 y_minus_30 = holder[1] - 30.0
 
                 unload_lines = [
-                    "G53 G0 Z-1",
-                    f"G53 G0 X{holder[0]:g} Y{y_minus_30:g}",
-                    "G53 G0 Z-150",
-                    f"G53 G0 Y{holder[1]:g}",
-                    "G4 P0",
-                    "M106 ;release",
-                    "G4 P0.2",
-                    "G53 G0 Z-80",
-                    "G4 P0",
-                    "M107 ;clamp",
-                    "G53 G0 Z-1",
+                    ("G53 G0 Z-1", True),
+                    (f"G53 G0 X{holder[0]:g} Y{y_minus_30:g}", True),
+                    ("G53 G0 Z-150", True),
+                    (f"G53 G0 Y{holder[1]:g}", True),
+                    ("G4 P0", False),
+                    ("M106 ;release", True),
+                    ("G4 P0.2", False),
+                    ("G53 G0 Z-80", True),
+                    ("G4 P0", False),
+                    ("M107 ;clamp", True),
+                    ("G53 G0 Z-1", True),
                 ]
 
-                # Send the unload sequence to the machine
-                for l in unload_lines:
-                    self.sendGCode(l)
+                print("ATCf");
+
+                # Send the unload sequence to the machine, waiting after moves and critical commands
+                for cmd, do_wait in unload_lines:
+                    self.sendGCode(cmd)
+                    if do_wait:
+                        self.sendGCode("%wait")
 
             except Exception as e:
                 # Do not perform automatic fallback. Ask user whether to try
@@ -2503,27 +2568,31 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             self.sendGCode("G53 G0 Z[toolchangez]")
             self.sendGCode("G53 G0 X[toolchangex] Y[toolchangey]")
 
+        print("ATCf");
+
         # Try automatic load sequence to grab the new tool and measure it
         if holder and holder[0] is not None and holder[1] is not None:
             try:
                 # Load sequence provided by user
                 load_lines = [
-                    "G53 G0 Z-1",
-                    f"G53 G0 X{holder[0]:g} Y{holder[1]:g}",
-                    "G53 G0 Z-80",
-                    "G4 P0",
-                    "M106 ;release",
-                    "G53 G0 Z-150",
-                    "G4 P0",
-                    "M107 ;clamp",
-                    "G4 P0.4",
-                    f"G53 G0 X{holder[0]:g} Y{holder[1]-30.0:g}",
-                    "G53 G0 Z-1",
+                    ("G53 G0 Z-1", True),
+                    (f"G53 G0 X{holder[0]:g} Y{holder[1]:g}", True),
+                    ("G53 G0 Z-80", True),
+                    ("G4 P0", False),
+                    ("M106 ;release", True),
+                    ("G53 G0 Z-150", True),
+                    ("G4 P0", False),
+                    ("M107 ;clamp", True),
+                    ("G4 P0.4", False),
+                    (f"G53 G0 X{holder[0]:g} Y{holder[1]-30.0:g}", True),
+                    ("G53 G0 Z-1", True),
                 ]
 
-                for l in load_lines:
-                    self.sendGCode(l)
-                    self.app.log.put((Sender.Sender.MSG_SEND, "ATC: " + l))
+                for cmd, do_wait in load_lines:
+                    self.sendGCode(cmd)
+                    if do_wait:
+                        self.sendGCode("%wait")
+                    self.app.log.put((Sender.Sender.MSG_SEND, "ATC: " + cmd))
 
                 self.app.log.put((Sender.Sender.MSG_SEND, "ATC: Starting measurement of new tool"))
                 # After automatic load, measure the new tool
@@ -2550,12 +2619,14 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                         return False
                     final_tlo = expected_new
 
-                # update tool and TLO
-                CNC.vars["tool"] = new_tool
-                # send G43.1 to set TLO for new tool
+                # send G43.1 to set TLO for new tool first
                 self.sendGCode(f"G43.1Z{final_tlo:g}")
                 CNC.vars["TLO"] = final_tlo
 
+                # Only after TLO is set, update the tool number
+                CNC.vars["tool"] = new_tool
+                self.toolEntry.set(new_tool)  # Update UI
+                
                 # persist current tool (centralized)
                 _persist_tool(new_tool)
 
@@ -2616,12 +2687,17 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                         return False
                     final_tlo = expected_new
 
-                # update tool and TLO
-                CNC.vars["tool"] = new_tool
+                # Send G43.1 to set TLO for new tool first
                 self.sendGCode(f"G43.1Z{final_tlo:g}")
                 CNC.vars["TLO"] = final_tlo
+
+                # Only after TLO is set, update the tool number
+                CNC.vars["tool"] = new_tool
+                self.toolEntry.set(new_tool)  # Update UI
+                
                 # persist current tool (centralized)
                 _persist_tool(new_tool)
+                
                 self.app.mcontrol.viewParameters()
                 return True
 
@@ -2731,3 +2807,14 @@ class ControlPage(CNCRibbon.Page):
             (ConnectionGroup, UserGroup, RunGroup),
             (DROFrame, abcDROFrame, ControlFrame, abcControlFrame, StateFrame),
         )
+        
+    def persist_tool(self, tool=None):
+        """Persist current tool number to configuration"""
+        if tool is None:
+            tool = CNC.vars.get("tool", 0)
+        try:
+            Utils.setStr("ATC", "current_tool", str(tool))
+            Utils.saveConfiguration()
+        except Exception:
+            # Non-fatal: just continue
+            pass

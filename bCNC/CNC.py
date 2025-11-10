@@ -683,7 +683,7 @@ class CNC:
         "prby": 0.0,
         "prbz": 0.0,
         "prbcmd": "G38.2",
-        "prbfeed": 10.0,
+        "prbfeed": 60.0,
         "errline": "",
         "wx": 0.0,
         "wy": 0.0,
@@ -781,7 +781,13 @@ class CNC:
             elif g[0] == "S":
                 CNC.vars["rpm"] = float(g[1:])
             elif g[0] == "T":
-                CNC.vars["tool"] = int(g[1:])
+                # Only update tool if explicitly specified with a non-zero value
+                try:
+                    toolnum = int(g[1:])
+                    if toolnum > 0:  # Only set non-zero tools
+                        CNC.vars["tool"] = toolnum
+                except ValueError:
+                    pass  # Ignore invalid tool numbers
             else:
                 var = MODAL_MODES.get(g)
                 if var is not None:
