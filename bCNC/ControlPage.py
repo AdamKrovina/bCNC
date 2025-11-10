@@ -2434,6 +2434,47 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             messagebox.showinfo(_("ATC"), _("Already using requested tool"))
             return True
 
+        # Helper to run a list of lines via app.run and wait for completion.
+        # It first waits for any existing run to finish (up to wait_before seconds),
+        # then calls self.app.run(lines=lines) and waits up to wait_after seconds
+        # for that run to complete. Returns True on success, False on timeout.
+        def _run_lines_and_wait(lines, wait_before=5.0, wait_after=20.0):
+            # Wait for any previous run to finish
+            t0 = time.time()
+            while time.time() - t0 < wait_before and getattr(self.app, "running", False):
+                try:
+                    self.app.update()
+                except Exception:
+                    pass
+                time.sleep(0.05)
+
+            if getattr(self.app, "running", False):
+                # Previous run didn't finish in time
+                self.app.log.put((Sender.Sender.MSG_ERROR, "ATC: previous run did not finish before starting next sequence"))
+                return False
+
+            # Start the requested run
+            try:
+                self.app.run(lines=lines)
+            except Exception:
+                # If run() raises, log and return False
+                self.app.log.put((Sender.Sender.MSG_ERROR, "ATC: failed to start run sequence"))
+                return False
+
+            # Wait for this run to finish
+            t1 = time.time()
+            while time.time() - t1 < wait_after and getattr(self.app, "running", False):
+                try:
+                    self.app.update()
+                except Exception:
+                    pass
+                time.sleep(0.05)
+
+            if getattr(self.app, "running", False):
+                self.app.log.put((Sender.Sender.MSG_ERROR, "ATC: run sequence timeout"))
+                return False
+            return True
+
         # Ensure probe/toolmz info exists
         if CNC.vars.get("toolmz", None) is None:
             messagebox.showwarning(
@@ -2447,60 +2488,62 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         print("ATCa");
 
         # measure current tool
-        measured_old = self._probeMeasure()
-        if measured_old is None:
-            messagebox.showerror(_("ATC"), _("Failed to measure current tool"))
-            return False
-        
-        print("ATCb");
-
-        # compute measured TLO using probe (prbz) minus reference toolmz
-        measured_tlo_old = float(CNC.vars.get("prbz", 0.0)) - float(CNC.vars.get("toolmz", 0.0))
-
-        print("measured_old %.3f" % (measured_old))
-        print("toolmz %.2f" % float(CNC.vars.get("toolmz", 0.0)))
-        print("prbz %.3f" % float(CNC.vars.get("prbz", 0.0)))
-        print("measured_tlo_old %.3f" % (measured_tlo_old))
-
-        # expected from table (tlo1 indexed from 0, tools usually numbered from 1)
-        try:
-            expected_old = float(self.tlo1[cur_tool - 1].get())
-        except Exception:
-            expected_old = None
-
-
-        print("expected_old %.3f" % (expected_old))
-
-        print("ATCc");
-
-        tol = getattr(self, "atc_tol", Utils.getFloat("ATC", "tol", 0.5))
-
-        print("cur_tool %.2f" % (cur_tool))
-
-        print("tol %.3f" % (tol))
-
-        if expected_old is None:
-            ans = messagebox.askyesno(
-                _("ATC"),
-                _(
-                    "No expected TLO for current tool in table. Continue anyway?"
-                ),
-            )
-            if not ans:
-                self.app.log.put((Sender.Sender.MSG_ERROR, "ATC: Aborted - no expected TLO for current tool"))
+        if(False):
+            measured_old = self._probeMeasure()
+            if measured_old is None:
+                messagebox.showerror(_("ATC"), _("Failed to measure current tool"))
                 return False
-        else:
-            if abs(measured_tlo_old - expected_old) > tol:
+            
+            print("ATCb");
+
+            # compute measured TLO using probe (prbz) minus reference toolmz
+            measured_tlo_old = float(CNC.vars.get("prbz", 0.0)) - float(CNC.vars.get("toolmz", 0.0))
+
+            print("measured_old %.3f" % (measured_old))
+            print("toolmz %.2f" % float(CNC.vars.get("toolmz", 0.0)))
+            print("prbz %.3f" % float(CNC.vars.get("prbz", 0.0)))
+            print("measured_tlo_old %.3f" % (measured_tlo_old))
+
+            # expected from table (tlo1 indexed from 0, tools usually numbered from 1)
+            try:
+                expected_old = float(self.tlo1[cur_tool - 1].get())
+            except Exception:
+                expected_old = None
+
+
+            print("expected_old %.3f" % (expected_old))
+
+            print("ATCc");
+
+            tol = getattr(self, "atc_tol", Utils.getFloat("ATC", "tol", 0.5))
+
+            print("cur_tool %.2f" % (cur_tool))
+
+            print("tol %.3f" % (tol))
+
+            if expected_old is None:
                 ans = messagebox.askyesno(
-                    _("ATC Error"), 
-                    _("Current tool measurement {:.3f} not within tolerance {:.3f} of expected {:.3f}. Continue anyway?").format(
-                        measured_tlo_old, tol, expected_old
-                    )
+                    _("ATC"),
+                    _(
+                        "No expected TLO for current tool in table. Continue anyway?"
+                    ),
                 )
                 if not ans:
-                    self.app.log.put((Sender.Sender.MSG_ERROR, "ATC: Aborted - current tool measurement out of tolerance"))
+                    self.app.log.put((Sender.Sender.MSG_ERROR, "ATC: Aborted - no expected TLO for current tool"))
                     return False
-                
+            else:
+                if abs(measured_tlo_old - expected_old) > tol:
+                    ans = messagebox.askyesno(
+                        _("ATC Error"), 
+                        _("Current tool measurement {:.3f} not within tolerance {:.3f} of expected {:.3f}. Continue anyway?").format(
+                            measured_tlo_old, tol, expected_old
+                        )
+                    )
+                    if not ans:
+                        self.app.log.put((Sender.Sender.MSG_ERROR, "ATC: Aborted - current tool measurement out of tolerance"))
+                        return False
+
+
         print("ATCd");
 
         # move to holder position for current tool to allow removal
@@ -2526,22 +2569,31 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                     (f"G53 G0 X{holder[0]:g} Y{y_minus_30:g}", True),
                     ("G53 G0 Z-150", True),
                     (f"G53 G0 Y{holder[1]:g}", True),
-                    ("G4 P0", False),
-                    ("M106 ;release", True),
-                    ("G4 P0.2", False),
+                    ("G4 P0", True),
+                    ("M106 ;release", False),
+                    ("G4 P0.2", True),
                     ("G53 G0 Z-80", True),
-                    ("G4 P0", False),
-                    ("M107 ;clamp", True),
+                    ("G4 P0", True),
+                    ("M107 ;clamp", False),
                     ("G53 G0 Z-1", True),
                 ]
 
-                print("ATCf");
+                print("ATC run unload lines");
 
-                # Send the unload sequence to the machine, waiting after moves and critical commands
+                # Submit unload sequence through the run/compile pipeline so the
+                # sender thread will actually transmit the commands. Wait a
+                # short time (timeout) for the sequence to finish.
+                unload_run_lines = []
                 for cmd, do_wait in unload_lines:
-                    self.sendGCode(cmd)
+                    unload_run_lines.append(cmd)
                     if do_wait:
-                        self.sendGCode("%wait")
+                        unload_run_lines.append("%wait")
+
+                ok = _run_lines_and_wait(unload_run_lines, wait_before=5.0, wait_after=20.0)
+                if not ok:
+                    # failed to run unload sequence in time
+                    print("Failed to run unload sequence in time");
+                    return False
 
             except Exception as e:
                 # Do not perform automatic fallback. Ask user whether to try
@@ -2565,10 +2617,12 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                     return False
         else:
             # fallback: use configured Probe change (tool change) location
-            self.sendGCode("G53 G0 Z[toolchangez]")
-            self.sendGCode("G53 G0 X[toolchangex] Y[toolchangey]")
+            fallback_lines = ["G53 G0 Z[toolchangez]", "G53 G0 X[toolchangex] Y[toolchangey]"]
+            ok = _run_lines_and_wait(fallback_lines, wait_before=5.0, wait_after=20.0)
+            if not ok:
+                return False
 
-        print("ATCf");
+        print("ATC run load lines");
 
         # Try automatic load sequence to grab the new tool and measure it
         if holder and holder[0] is not None and holder[1] is not None:
@@ -2579,22 +2633,27 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                     (f"G53 G0 X{holder[0]:g} Y{holder[1]:g}", True),
                     ("G53 G0 Z-80", True),
                     ("G4 P0", False),
-                    ("M106 ;release", True),
+                    ("M106 ;release", False),
                     ("G53 G0 Z-150", True),
                     ("G4 P0", False),
-                    ("M107 ;clamp", True),
+                    ("M107 ;clamp", False),
                     ("G4 P0.4", False),
                     (f"G53 G0 X{holder[0]:g} Y{holder[1]-30.0:g}", True),
                     ("G53 G0 Z-1", True),
                 ]
 
+                load_run_lines = []
                 for cmd, do_wait in load_lines:
-                    self.sendGCode(cmd)
+                    load_run_lines.append(cmd)
                     if do_wait:
-                        self.sendGCode("%wait")
+                        load_run_lines.append("%wait")
                     self.app.log.put((Sender.Sender.MSG_SEND, "ATC: " + cmd))
 
                 self.app.log.put((Sender.Sender.MSG_SEND, "ATC: Starting measurement of new tool"))
+                ok = _run_lines_and_wait(load_run_lines, wait_before=5.0, wait_after=20.0)
+                if not ok:
+                    return False
+
                 # After automatic load, measure the new tool
                 measured_new = self._probeMeasure()
                 if measured_new is None:
