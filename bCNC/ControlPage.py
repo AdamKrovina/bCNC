@@ -2488,7 +2488,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         print("ATCa");
 
         # measure current tool
-        if(False):
+        if(True):
             measured_old = self._probeMeasure()
             if measured_old is None:
                 messagebox.showerror(_("ATC"), _("Failed to measure current tool"))
@@ -2621,6 +2621,18 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             ok = _run_lines_and_wait(fallback_lines, wait_before=5.0, wait_after=20.0)
             if not ok:
                 return False
+            
+
+        print("ATC set new tool");
+
+        # move to holder position for new tool to allow loading
+        holder = None
+        if hasattr(self, "atc_holders"):
+            try:
+                holder = self.atc_holders[new_tool - 1]
+            except Exception:
+                holder = None
+
 
         print("ATC run load lines");
 
@@ -2650,7 +2662,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                     self.app.log.put((Sender.Sender.MSG_SEND, "ATC: " + cmd))
 
                 self.app.log.put((Sender.Sender.MSG_SEND, "ATC: Starting measurement of new tool"))
-                ok = _run_lines_and_wait(load_run_lines, wait_before=5.0, wait_after=20.0)
+                ok = _run_lines_and_wait(load_run_lines, wait_before=5.0, wait_after=80.0)
                 if not ok:
                     return False
 
