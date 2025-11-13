@@ -656,6 +656,11 @@ class Sender:
             self._run_start_time = None
         except Exception:
             pass
+        # Clear any previous record of completed runs
+        try:
+            self._last_run_completed = None
+        except Exception:
+            pass
         time.sleep(1)
 
     # ----------------------------------------------------------------------
@@ -672,13 +677,20 @@ class Sender:
                     os.system(self._onStop)
                 except Exception:
                     pass
+        # Save final gcount so callers can inspect completed lines even
+        # after we reset the internal _gcount to 0 below.
+        try:
+            self._last_run_completed = self._gcount
+        except Exception:
+            self._last_run_completed = None
+
         print("runEnded: resetting states, _gcount = %.2f" % self._gcount)
-        self._gcount = 0
         self._runLines = 0
         try:
             self._run_start_time = None
         except Exception:
             pass
+        self._gcount = 0
         self._quit = 0
         self._msg = None
         self._pause = False

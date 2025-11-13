@@ -232,7 +232,32 @@ def saveConfiguration():
     f = open(iniUser, "w")
     config.write(f)
     f.close()
+    # NOTE: original saveConfiguration removes icons (delIcons) to cleanup
+    # resources when the program exits. That is unsafe to call while the
+    # GUI is running because it deletes PhotoImage objects referenced by
+    # widgets (causing TclError later). Keep that behavior for the normal
+    # saveConfiguration (used at exit). For immediate in-GUI saves that
+    # must not disturb widget images, use saveConfiguration_safe().
     delIcons()
+
+
+def saveConfiguration_safe():
+    """Write current in-memory configuration to disk without removing
+    PhotoImage objects from the Tcl interpreter.
+
+    Use this when saving from GUI callbacks where deleting images would
+    cause Tk errors. This function mirrors saveConfiguration but skips
+    calling delIcons()."""
+    global config
+    try:
+        cleanConfiguration()
+        with open(iniUser, "w") as f:
+            config.write(f)
+        return True
+    except Exception:
+        # Return False to indicate failure to callers so they can decide
+        # whether this is fatal.
+        return False
 
 
 # ----------------------------------------------------------------------

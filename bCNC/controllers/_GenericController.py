@@ -277,6 +277,11 @@ class _GenericController:
             self.master._stop = True
             del cline[:]  # After reset clear the buffer counters
             del sline[:]
+            # Record controller restart time so monitor can apply a settle delay
+            try:
+                self.master._controller_restart_time = time.time()
+            except Exception:
+                pass
             CNC.vars["version"] = line.split()[1]
             # Detect controller
             if self.master.controller in ("GRBL0", "GRBL1"):

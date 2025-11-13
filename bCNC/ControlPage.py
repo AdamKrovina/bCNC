@@ -107,7 +107,7 @@ def run_lines_and_wait(app, lines, wait_before=5.0, wait_after=10.0):
 
     # clear any previous ATC-abort flag and add debug reporting
     try:
-        app. = False
+        app._atc_aborted = False
     except Exception:
         pass
 
@@ -151,22 +151,115 @@ def run_lines_and_wait(app, lines, wait_before=5.0, wait_after=10.0):
     # expected progress. If the sender did not execute any lines (or fewer
     # than expected), mark ATC aborted so callers can stop their routines.
     try:
-        gcount = getattr(app, "_gcount", None)
+        # The sender resets _gcount to 0 in runEnded(). Prefer the
+        # stored final count if available.
+        gcount = getattr(app, "_last_run_completed", None)
+        if gcount is None:
+            gcount = getattr(app, "_gcount", None)
+
         # If we recorded expected_run_lines and it was positive, but gcount is
         # None or less than expected (especially zero), treat it as aborted.
         if expected_run_lines and expected_run_lines > 0 and (gcount is None or gcount < expected_run_lines):
+            # Before aborting immediately, perform a single retry after a short delay
+            # to handle transient controller resets or transient comms errors.
+            retry_sleep = 1.0  # seconds (user-requested)
             try:
-                app._atc_aborted = True
+                app.log.put((Sender.Sender.MSG_SEND, f"DEBUG: ATC: detected premature end (gcount={gcount} expected={expected_run_lines}); retrying after {retry_sleep}s"))
             except Exception:
                 pass
+            # Small delay then try the run again once
+            time.sleep(retry_sleep)
             try:
-                app.log.put((Sender.Sender.MSG_ERROR, "ATC: run ended prematurely - aborting ATC routine"))
+                # Clear previous abort flag and re-run
+                try:
+                    app._atc_aborted = False
+                except Exception:
+                    pass
+                app.run(lines=lines)
             except Exception:
                 pass
-            return False
+
+            # Wait again for the run to finish (same wait_after)
+            t2 = time.time()
+            while time.time() - t2 < wait_after and getattr(app, "running", False):
+                try:
+                    app.update()
+                except Exception:
+                    pass
+                time.sleep(0.05)
+
+            # Check final completed count again (prefer stored final value)
+            gcount = getattr(app, "_last_run_completed", None)
+            if gcount is None:
+                gcount = getattr(app, "_gcount", None)
+
+            if expected_run_lines and expected_run_lines > 0 and (gcount is None or gcount < expected_run_lines):
+                try:
+                    app._atc_aborted = True
+                except Exception:
+                    pass
+                try:
+                    app.log.put((Sender.Sender.MSG_ERROR, "ATC: run ended prematurely - aborting ATC routine"))
+                except Exception:
+                    pass
+                return False
     except Exception:
         pass
     return True
+
+
+# ----------------------------------------------------------------------
+# Helper: persist current tool to the Control page (single place)
+def persist_current_tool(app, tool):
+    """Persist tool using the Control page's persist_tool() if available.
+
+    - app: Application instance
+    - tool: tool number to persist
+
+    This centralizes the lookup so callers (from other frames) don't have
+    to duplicate the lookup and error handling.
+    """
+    try:
+        pages = getattr(app, "pages", {}) or {}
+        control_page = pages.get("Control")
+        if control_page and hasattr(control_page, "persist_tool"):
+            try:
+                res = control_page.persist_tool(tool)
+                # If the page returns a boolean, respect it. If it raises,
+                # allow exception to be caught below and return False.
+                if res is False:
+                    return False
+                return True
+            except Exception:
+                try:
+                    app.log.put((Sender.Sender.MSG_ERROR, "ATC: persist_tool raised an exception"))
+                except Exception:
+                    pass
+                return False
+        # fallback: find any page that implements persist_tool
+        for page in pages.values():
+            try:
+                if hasattr(page, "persist_tool"):
+                    try:
+                        res = page.persist_tool(tool)
+                        if res is False:
+                            return False
+                        return True
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        try:
+            # best-effort logging if no persist implementation found
+            app.log.put((Sender.Sender.MSG_ERROR, "ATC: persist_tool not found on any page"))
+        except Exception:
+            pass
+    except Exception:
+        try:
+            app.log.put((Sender.Sender.MSG_ERROR, "ATC: persist_current_tool failed"))
+        except Exception:
+            pass
+    return False
 
 
 
@@ -2734,9 +2827,20 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                 # Only after TLO is set, update the tool number
                 CNC.vars["tool"] = new_tool
                 self.toolEntry.set(new_tool)  # Update UI
-                
-                # persist current tool (centralized)
-                self.persist_tool(new_tool)
+
+                # persist current tool (centralized). Treat inability to
+                # persist to disk as a fatal error for ATC.
+                if not persist_current_tool(self.app, new_tool):
+                    try:
+                        messagebox.showerror(
+                            _("ATC"),
+                            _(
+                                "Fatal: failed to persist current tool to disk. Aborting ATC."
+                            ),
+                        )
+                    except Exception:
+                        pass
+                    return False
 
                 self.app.mcontrol.viewParameters()
                 # Success: do not show the manual swap messagebox
@@ -2803,9 +2907,19 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                 CNC.vars["tool"] = new_tool
                 self.toolEntry.set(new_tool)  # Update UI
                 
-                # persist current tool (centralized)
-                self.persist_tool(new_tool)
-                
+                # persist current tool (centralized). Treat inability to
+                # persist to disk as a fatal error for ATC.
+                if not persist_current_tool(self.app, new_tool):
+                    try:
+                        messagebox.showerror(
+                            _("ATC"),
+                            _(
+                                "Fatal: failed to persist current tool to disk. Aborting ATC."
+                            ),
+                        )
+                    except Exception:
+                        pass
+                    return False
                 self.app.mcontrol.viewParameters()
                 return True
 
@@ -2921,8 +3035,21 @@ class ControlPage(CNCRibbon.Page):
         if tool is None:
             tool = CNC.vars.get("tool", 0)
         try:
+            # Update in-memory configuration and write to disk immediately
+            # using a safe saver that does not remove PhotoImage objects.
             Utils.setStr("ATC", "current_tool", str(tool))
-            Utils.saveConfiguration()
+            # Immediate safe on-disk save (doesn't call delIcons)
+            saved = False
+            try:
+                saved = Utils.saveConfiguration_safe()
+            except Exception:
+                saved = False
+
+            # If we failed to save to disk, treat this as a fatal error for
+            # callers (they may abort ATC). Raise so higher-level helpers
+            # can detect and handle the fatal condition.
+            if not saved:
+                raise RuntimeError("Failed to save configuration to disk")
         except Exception:
             # Non-fatal: just continue
             pass

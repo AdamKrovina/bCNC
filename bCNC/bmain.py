@@ -2876,13 +2876,24 @@ class Application(Tk, Sender):
                 pass
             # Grace: allow a short time for sender to dequeue first line
             grace = 0.5
+            # Settle: if controller recently restarted/announced a banner, wait
+            # an extra short period to let the controller stabilize before
+            # declaring the run ended.
+            settle = 1.0  # seconds (user-requested)
             now = time.time()
             run_start = getattr(self, "_run_start_time", None)
             elapsed = (now - run_start) if run_start else None
             if self._gcount >= self._runLines and (
                 self._gcount > 0 or (elapsed is not None and elapsed > grace)
             ):
-                self.runEnded()
+                # If controller restart was recently seen, postpone final
+                # runEnded until settle time elapsed after restart.
+                restart = getattr(self, "_controller_restart_time", None)
+                if restart is not None and (now - restart) < settle:
+                    # skip calling runEnded now; allow more time
+                    pass
+                else:
+                    self.runEnded()
 
     # -----------------------------------------------------------------------
     # "thread" timed function looking for messages in the serial thread
