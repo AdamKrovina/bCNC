@@ -57,6 +57,119 @@ __author__ = "Vasilis Vlachoudis"
 __email__ = "vvlachoudis@gmail.com"
 
 
+# ----------------------------------------------------------------------
+# Helper: run_lines_and_wait
+#
+# Module-level helper so any page/frame can submit a small sequence via
+# Application.run() and wait for it to finish. This avoids attaching the
+# helper method only to ControlPage instances (which caused attribute
+# errors when other frames tried to call it).
+def run_lines_and_wait(app, lines, wait_before=5.0, wait_after=10.0):
+    """Run a small ad-hoc lines sequence through app.run and wait for it.
+
+    - app: Application instance (must implement .run() and have .running/.update())
+    - lines: list of lines (strings and/or %wait tokens)
+    - wait_before: seconds to wait for any previous run to finish
+    - wait_after: seconds to wait for the started run to complete
+
+    Returns True if the run completed, False on timeout or failure.
+    """
+    t0 = time.time()
+    while time.time() - t0 < wait_before and getattr(app, "running", False):
+        try:
+            app.update()
+        except Exception:
+            pass
+        time.sleep(0.05)
+
+    if getattr(app, "running", False):
+        try:
+            app.log.put((Sender.Sender.MSG_ERROR, "ATC: previous run did not finish before starting next sequence"))
+        except Exception:
+            pass
+        return False
+
+    try:
+        app.run(lines=lines)
+    except Exception:
+        try:
+            app.log.put((Sender.Sender.MSG_ERROR, "ATC: failed to start run sequence"))
+        except Exception:
+            pass
+        return False
+
+    # Capture expected runLines immediately after starting run so we can
+    # detect if the run terminates prematurely (no progress).
+    try:
+        expected_run_lines = getattr(app, "_runLines", None)
+    except Exception:
+        expected_run_lines = None
+
+    # clear any previous ATC-abort flag and add debug reporting
+    try:
+        app. = False
+    except Exception:
+        pass
+
+    # Debug: report queued size and preview (helpful to see what's been enqueued)
+    try:
+        try:
+            qsize = app.queue.qsize()
+        except Exception:
+            qsize = None
+        app.log.put((Sender.Sender.MSG_SEND, f"DEBUG: run started; queue size={qsize}"))
+        try:
+            app.log.put((Sender.Sender.MSG_SEND, f"DEBUG: run state after app.run: _runLines={getattr(app,'_runLines',None)} _gcount={getattr(app,'_gcount',None)} running={getattr(app,'running',None)}"))
+        except Exception:
+            pass
+        try:
+            preview = list(app.queue.queue)[:10]
+            app.log.put((Sender.Sender.MSG_SEND, "DEBUG: queue preview types=" + 
+                         str([type(x).__name__ for x in preview]) ))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    t1 = time.time()
+    while time.time() - t1 < wait_after and getattr(app, "running", False):
+        try:
+            app.update()
+        except Exception:
+            print("app.update() failed during run wait");
+            pass
+        time.sleep(0.05)
+
+    if getattr(app, "running", False):
+        try:
+            app.log.put((Sender.Sender.MSG_ERROR, "ATC: run sequence timeout"))
+        except Exception:
+            print("app.log.put() failed during run wait");
+            pass
+        return False
+    # Run finished (app.running is False). Check whether it finished with
+    # expected progress. If the sender did not execute any lines (or fewer
+    # than expected), mark ATC aborted so callers can stop their routines.
+    try:
+        gcount = getattr(app, "_gcount", None)
+        # If we recorded expected_run_lines and it was positive, but gcount is
+        # None or less than expected (especially zero), treat it as aborted.
+        if expected_run_lines and expected_run_lines > 0 and (gcount is None or gcount < expected_run_lines):
+            try:
+                app._atc_aborted = True
+            except Exception:
+                pass
+            try:
+                app.log.put((Sender.Sender.MSG_ERROR, "ATC: run ended prematurely - aborting ATC routine"))
+            except Exception:
+                pass
+            return False
+    except Exception:
+        pass
+    return True
+
+
+
 _LOWSTEP = 0.0001
 _HIGHSTEP = 1000.0
 _HIGHZSTEP = 10.0
@@ -2328,6 +2441,8 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
 
     # ----------------------------------------------------------------------
     def _probeMeasure(self, timeout=100.0):
+        print("_probeMeasure called")
+        self.app.log.put((Sender.Sender.MSG_OK, "ATC: _probeMeasure called"))
         # Run a probe sequence to measure tool on the tool setter.
         # Returns True if probe completed and CNC.vars['prbz'] updated, else None.
         old_prbz = CNC.vars.get("prbz", None)
@@ -2352,52 +2467,20 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             "%update atc_prbz",
         ]
 
-        # Run probe sequence
-        self.app.run(lines=lines)
+        ok = run_lines_and_wait(self.app, lines, wait_before=10, wait_after=timeout)
+        if not ok:
+            print("_probeMeasure failed to run probe");
+            return None
 
-        # wait until atc_prbz or prbz changed
-        t0 = time.time()
         result = None
-        while time.time() - t0 < timeout:
-            try:
-                self.app.update()
-            except Exception:
-                pass
-            # prefer explicit atc_prbz
-            if "atc_prbz" in CNC.vars and CNC.vars.get("atc_prbz") is not None:
-                result = CNC.vars.get("atc_prbz")
-                break
-            if CNC.vars.get("prbz") is not None and CNC.vars.get("prbz") != old_prbz:
-                result = CNC.vars.get("prbz")
-                break
-            time.sleep(0.05)
-
-        # If still running, give the sender a short grace period to finish
-        # sending/executing the last queued commands before forcing run end.
-        # This helps ensure the final move (e.g., G53 G0 Z-1) has time to be
-        # transmitted and processed by the controller.
-        if getattr(self.app, "running", False):
-            try:
-                POST_RUN_TIMEOUT = 5.0  # seconds
-                t_wait_start = time.time()
-                # Wait up to POST_RUN_TIMEOUT while allowing the GUI and
-                # sender thread to process events. Poll frequently.
-                while time.time() - t_wait_start < POST_RUN_TIMEOUT and getattr(self.app, "running", False):
-                    try:
-                        self.app.update()
-                    except Exception:
-                        pass
-                    time.sleep(0.05)
-
-                # If still running after the grace period, force end the run
-                if getattr(self.app, "running", False):
-                    try:
-                        self.app.runEnded()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
+ 
+        # prefer explicit atc_prbz
+        if "atc_prbz" in CNC.vars and CNC.vars.get("atc_prbz") is not None:
+            result = CNC.vars.get("atc_prbz")
+        elif CNC.vars.get("prbz") is not None and CNC.vars.get("prbz") != old_prbz:
+            result = CNC.vars.get("prbz")
+                
+        print("_probeMeasure result %.3f" % (result) )
         return result
         
     # ----------------------------------------------------------------------
@@ -2413,14 +2496,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         #print("ATC start");
         self.app.log.put((Sender.Sender.MSG_SEND, "ATC: Starting tool change routine"))
         #print("ATC start1");
-        # helper to persist current tool in one place
-        def _persist_tool(tool):
-            try:
-                Utils.setStr("ATC", "current_tool", str(tool))
-                Utils.saveConfiguration()
-            except Exception:
-                # Non-fatal: just continue
-                pass
+        # Use class method persist_tool to save current tool to configuration
         # Allow callers to pass the desired tool programmatically
         if new_tool is None:
             try:
@@ -2434,46 +2510,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             messagebox.showinfo(_("ATC"), _("Already using requested tool"))
             return True
 
-        # Helper to run a list of lines via app.run and wait for completion.
-        # It first waits for any existing run to finish (up to wait_before seconds),
-        # then calls self.app.run(lines=lines) and waits up to wait_after seconds
-        # for that run to complete. Returns True on success, False on timeout.
-        def _run_lines_and_wait(lines, wait_before=5.0, wait_after=20.0):
-            # Wait for any previous run to finish
-            t0 = time.time()
-            while time.time() - t0 < wait_before and getattr(self.app, "running", False):
-                try:
-                    self.app.update()
-                except Exception:
-                    pass
-                time.sleep(0.05)
-
-            if getattr(self.app, "running", False):
-                # Previous run didn't finish in time
-                self.app.log.put((Sender.Sender.MSG_ERROR, "ATC: previous run did not finish before starting next sequence"))
-                return False
-
-            # Start the requested run
-            try:
-                self.app.run(lines=lines)
-            except Exception:
-                # If run() raises, log and return False
-                self.app.log.put((Sender.Sender.MSG_ERROR, "ATC: failed to start run sequence"))
-                return False
-
-            # Wait for this run to finish
-            t1 = time.time()
-            while time.time() - t1 < wait_after and getattr(self.app, "running", False):
-                try:
-                    self.app.update()
-                except Exception:
-                    pass
-                time.sleep(0.05)
-
-            if getattr(self.app, "running", False):
-                self.app.log.put((Sender.Sender.MSG_ERROR, "ATC: run sequence timeout"))
-                return False
-            return True
+        # Use class helper self._run_lines_and_wait to submit sequences and wait
 
         # Ensure probe/toolmz info exists
         if CNC.vars.get("toolmz", None) is None:
@@ -2589,7 +2626,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                     if do_wait:
                         unload_run_lines.append("%wait")
 
-                ok = _run_lines_and_wait(unload_run_lines, wait_before=5.0, wait_after=20.0)
+                ok = run_lines_and_wait(self.app, unload_run_lines, wait_before=5.0, wait_after=20.0)
                 if not ok:
                     # failed to run unload sequence in time
                     print("Failed to run unload sequence in time");
@@ -2618,7 +2655,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         else:
             # fallback: use configured Probe change (tool change) location
             fallback_lines = ["G53 G0 Z[toolchangez]", "G53 G0 X[toolchangex] Y[toolchangey]"]
-            ok = _run_lines_and_wait(fallback_lines, wait_before=5.0, wait_after=20.0)
+            ok = run_lines_and_wait(self.app, fallback_lines, wait_before=5.0, wait_after=20.0)
             if not ok:
                 return False
             
@@ -2662,7 +2699,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                     self.app.log.put((Sender.Sender.MSG_SEND, "ATC: " + cmd))
 
                 self.app.log.put((Sender.Sender.MSG_SEND, "ATC: Starting measurement of new tool"))
-                ok = _run_lines_and_wait(load_run_lines, wait_before=5.0, wait_after=80.0)
+                ok = run_lines_and_wait(self.app, load_run_lines, wait_before=5.0, wait_after=80.0)
                 if not ok:
                     return False
 
@@ -2699,7 +2736,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                 self.toolEntry.set(new_tool)  # Update UI
                 
                 # persist current tool (centralized)
-                _persist_tool(new_tool)
+                self.persist_tool(new_tool)
 
                 self.app.mcontrol.viewParameters()
                 # Success: do not show the manual swap messagebox
@@ -2767,7 +2804,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                 self.toolEntry.set(new_tool)  # Update UI
                 
                 # persist current tool (centralized)
-                _persist_tool(new_tool)
+                self.persist_tool(new_tool)
                 
                 self.app.mcontrol.viewParameters()
                 return True

@@ -651,6 +651,11 @@ class Sender:
         self.running = True
         self.disable()
         self.emptyQueue()
+        # Clear any prior run start timestamp; it will be set by Application.run
+        try:
+            self._run_start_time = None
+        except Exception:
+            pass
         time.sleep(1)
 
     # ----------------------------------------------------------------------
@@ -658,6 +663,7 @@ class Sender:
     # ----------------------------------------------------------------------
     def runEnded(self):
         if self.running:
+            print("Run ended")
             self.log.put((Sender.MSG_RUNEND, _("Run ended")))
             self.log.put((Sender.MSG_RUNEND, str(datetime.now())))
             self.log.put((Sender.MSG_RUNEND, str(CNC.vars["msg"])))
@@ -666,7 +672,13 @@ class Sender:
                     os.system(self._onStop)
                 except Exception:
                     pass
+        print("runEnded: resetting states, _gcount = %.2f" % self._gcount)
+        self._gcount = 0
         self._runLines = 0
+        try:
+            self._run_start_time = None
+        except Exception:
+            pass
         self._quit = 0
         self._msg = None
         self._pause = False
@@ -742,9 +754,17 @@ class Sender:
             ):
                 try:
                     tosend = self.queue.get_nowait()
+                    try:
+                        self.log.put((Sender.MSG_SEND, f"DEBUG: dequeued {type(tosend).__name__} {repr(tosend)[:200]}"))
+                    except Exception:
+                        pass
                     if isinstance(tosend, tuple):
                         # wait to empty the grbl buffer and status is Idle
                         if tosend[0] == WAIT:
+                            try:
+                                self.log.put((Sender.MSG_SEND, "DEBUG: dequeued WAIT tuple; setting sio_wait=True"))
+                            except Exception:
+                                pass
                             # Don't count WAIT until we are idle!
                             self.sio_wait = True
                         elif tosend[0] == MSG:
@@ -857,6 +877,10 @@ class Sender:
                 self.serial_write(tosend)
 
                 self.log.put((Sender.MSG_BUFFER, tosend))
+                try:
+                    self.log.put((Sender.MSG_SEND, f"DEBUG: serial_write {repr(tosend)[:200]}"))
+                except Exception:
+                    pass
 
                 tosend = None
                 if not self.running and t - tg > G_POLL:

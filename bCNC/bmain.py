@@ -635,7 +635,29 @@ class Application(Tk, Sender):
 
         self.canvas.cameraOff()
         Sender.quit(self)
-        self.pages["Control"].persist_tool()  # Persist tool state before exiting
+        # Persist tool state before exiting. Be defensive: the pages map
+        # may not contain the expected Control page instance in some
+        # configurations, so search for any page that implements
+        # persist_tool() and call it.
+        try:
+            called = False
+            if "Control" in self.pages:
+                page = self.pages.get("Control")
+                if hasattr(page, "persist_tool"):
+                    page.persist_tool()
+                    called = True
+            if not called:
+                for page in self.pages.values():
+                    try:
+                        if hasattr(page, "persist_tool"):
+                            page.persist_tool()
+                            called = True
+                            break
+                    except Exception:
+                        continue
+        except Exception:
+            # Non-fatal: persist failure should not prevent exit
+            pass
         self.saveConfig() 
         self.destroy()
         if Utils.errors and Utils._errorReport:
@@ -2580,6 +2602,7 @@ class Application(Tk, Sender):
                 pass
 
         if lines is None:
+            print("Run called with lines=None, compiling from gcode")
             self.statusbar.setLimits(0, 9999)
             self.statusbar.setProgress(0, 0)
             self._paths = self.gcode.compile(self.queue, self.checkStop)
@@ -2616,18 +2639,37 @@ class Application(Tk, Sender):
             # the buffer of the machine should be empty?
             self._runLines = len(self._paths) + 1  # plus the wait
         else:
+            print("Run called with lines, compiling from lines")
             n = 1  # including one wait command
             for line in CNC.compile(lines):
                 if line is not None:
                     if isinstance(line, str):
                         self.queue.put(line + "\n")
+                        try:
+                            self.log.put((Sender.Sender.MSG_SEND, f"DEBUG: enqueue str repr={repr(line)[:200]}"))
+                        except Exception:
+                            pass
                     else:
                         self.queue.put(line)
+                        try:
+                            self.log.put((Sender.Sender.MSG_SEND, f"DEBUG: enqueue {type(line).__name__} {repr(line)[:200]}"))
+                        except Exception:
+                            pass
                     n += 1
             # set it at the end to be sure that all lines are queued
             self._runLines = n
-        self.queue.put((WAIT,))  # wait at the end to become idle
+        # record run start time so monitor can apply a small grace period
+        try:
+            self._run_start_time = time.time()
+        except Exception:
+            self._run_start_time = None
 
+        self.queue.put((WAIT,))  # wait at the end to become idle
+        try:
+            self.log.put((Sender.Sender.MSG_SEND, "DEBUG: enqueue final WAIT"))
+        except Exception:
+            pass
+        print(f"Running {self._runLines} lines")
         self.setStatus(_("Running..."))
         self.statusbar.setLimits(0, self._runLines)
         self.statusbar.configText(fill="White")
@@ -2826,7 +2868,20 @@ class Application(Tk, Sender):
                             )
                     self._selectI += 1
 
-            if self._gcount >= self._runLines:
+            # Decide whether run ended. Avoid premature runEnded() call right
+            # after submitting a run if no line has yet been sent (_gcount==0).
+            try:
+                print(f"DEBUG: monitorSerial about to evaluate run end: _gcount={self._gcount} _runLines={self._runLines} queue_size={self.queue.qsize()} running={self.running} run_start={getattr(self,'_run_start_time',None)}")
+            except Exception:
+                pass
+            # Grace: allow a short time for sender to dequeue first line
+            grace = 0.5
+            now = time.time()
+            run_start = getattr(self, "_run_start_time", None)
+            elapsed = (now - run_start) if run_start else None
+            if self._gcount >= self._runLines and (
+                self._gcount > 0 or (elapsed is not None and elapsed > grace)
+            ):
                 self.runEnded()
 
     # -----------------------------------------------------------------------
