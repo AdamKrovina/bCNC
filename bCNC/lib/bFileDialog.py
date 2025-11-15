@@ -1009,6 +1009,44 @@ class DirectoryDialog(FileDialog):
         self.filename.delete(0, END)
         self.filename.insert(0, path)
 
+    # ----------------------------------------------------------------------
+    # Override: When choosing a directory, pressing Open should select the
+    # highlighted subfolder if one is selected; otherwise select the current
+    # shown directory (self.path).
+    # ----------------------------------------------------------------------
+    def openFilename(self, event=None):
+        # If a single item is selected and it's a directory, choose it.
+        use_path = self.path
+        try:
+            sel = self.fileList.curselection()
+            if len(sel) == 1:
+                item = self.fileList.get(sel[0])
+                name = item[0]
+                # item[1] holds the type text; without relying on it, verify via stat
+                candidate = os.path.join(self.path, name)
+                try:
+                    st = os.stat(candidate)
+                    if S_ISDIR(st[ST_MODE]):
+                        use_path = candidate
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            os.lstat(use_path)
+        except Exception:
+            messagebox.showwarning(
+                _("Directory does not exist"),
+                _("Folder \"{}\" does not exist").format(use_path),
+                parent=self,
+            )
+            return
+        self.selFile = os.path.abspath(use_path)
+        # store to history and close
+        append2History(self.selFile)
+        self.close()
+
 
 # =============================================================================
 def askfilename(**options):

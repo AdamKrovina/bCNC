@@ -15,6 +15,10 @@ from tkinter import (
     LEFT,
     TOP,
     RIGHT,
+    BOTTOM,
+    X,
+    END,
+    Frame,
     BooleanVar,
     Checkbutton,
     Label,
@@ -24,6 +28,8 @@ import CNCRibbon
 import Ribbon
 import tkExtra
 import Utils
+import bFileDialog
+from tkinter import messagebox
 
 from Helpers import N_
 
@@ -267,6 +273,276 @@ class CloseGroup(CNCRibbon.ButtonGroup):
 
 
 # =============================================================================
+# Directory Jobs (table + controls)
+# =============================================================================
+class DirJobsFrame(CNCRibbon.PageLabelFrame):
+    def __init__(self, master, app):
+        CNCRibbon.PageLabelFrame.__init__(self, master, "DirJobs", _("Directory jobs"), app)
+
+        self.current_dir = None
+        # Controls row
+        ctrl = Frame(self)
+        ctrl.pack(side=TOP, fill=X)
+
+        self.load_btn = Ribbon.LabelButton(
+            ctrl,
+            text=_("Load dir"),
+            image=Utils.icons.get("open32"),
+            compound=LEFT,
+            command=self.load_dir,
+            background=Ribbon._BACKGROUND,
+        )
+        self.load_btn.pack(side=LEFT, padx=2, pady=2)
+        tkExtra.Balloon.set(self.load_btn, _("Choose a directory and list .nc files"))
+
+        self.save_btn = Ribbon.LabelButton(
+            ctrl,
+            text=_("Save dir"),
+            image=Utils.icons.get("save32"),
+            compound=LEFT,
+            command=self.save_dir,
+            background=Ribbon._BACKGROUND,
+        )
+        self.save_btn.pack(side=LEFT, padx=2, pady=2)
+        tkExtra.Balloon.set(self.save_btn, _("Save filename→tool mapping to dir.conf in the selected directory"))
+
+        # Spacer expands to push move/delete buttons to right
+        spacer = Frame(ctrl)
+        spacer.pack(side=LEFT, expand=YES, fill=X)
+
+        self.up_btn = Ribbon.LabelButton(
+            ctrl,
+            text=_("Up"),
+            image=Utils.icons.get("up"),
+            compound=LEFT,
+            command=self.move_up,
+            background=Ribbon._BACKGROUND,
+        )
+        self.up_btn.pack(side=LEFT, padx=2, pady=2)
+        tkExtra.Balloon.set(self.up_btn, _("Move selected row up"))
+
+        self.down_btn = Ribbon.LabelButton(
+            ctrl,
+            text=_("Down"),
+            image=Utils.icons.get("down"),
+            compound=LEFT,
+            command=self.move_down,
+            background=Ribbon._BACKGROUND,
+        )
+        self.down_btn.pack(side=LEFT, padx=2, pady=2)
+        tkExtra.Balloon.set(self.down_btn, _("Move selected row down"))
+
+        self.del_btn = Ribbon.LabelButton(
+            ctrl,
+            text=_("Delete"),
+            image=Utils.icons.get("clear"),
+            compound=LEFT,
+            command=self.delete_rows,
+            background=Ribbon._BACKGROUND,
+        )
+        self.del_btn.pack(side=LEFT, padx=2, pady=2)
+        tkExtra.Balloon.set(self.del_btn, _("Remove selected row(s) from the table"))
+
+        # Status label for selected directory and file count
+        self.status_label = Label(self, text="", anchor=W)
+        self.status_label.pack(side=TOP, fill=X, padx=2)
+
+        # Table
+        self.table = tkExtra.MultiListbox(
+            self,
+            ((_("Filename"), 40, None), (_("Tool"), 8, None)),
+            height=12,
+            header=True,
+            stretch="last",
+            background=tkExtra.GLOBAL_CONTROL_BACKGROUND,
+        )
+        self.table.sortAssist = None  # disable sorting to keep manual order
+        self.table.pack(side=TOP, expand=YES, fill=BOTH, padx=2, pady=2)
+
+        # Edit tool on click/double-click in second column
+        self.table.listbox(1).bind("<Double-1>", self.edit_tool)
+        self.table.listbox(1).bind("<Return>", self.edit_tool)
+        self.table.bindList("<Key-Delete>", lambda e: self.delete_rows())
+
+    # ------------------------------------------------------------------
+    def load_dir(self):
+        # Choose directory, default to last used or File dir
+        lastdir = Utils.getUtf("DirJobs", "lastdir", None)
+        initial = lastdir or Utils.getUtf("File", "dir")
+        path = bFileDialog.askdirectory(master=self, initialdir=initial)
+        if not path:
+            return
+        try:
+            path = os.path.abspath(path)
+        except Exception:
+            pass
+
+        self.current_dir = path
+        # Ensure config section exists before writing
+        try:
+            Utils.addSection("DirJobs")
+        except Exception:
+            pass
+        Utils.setStr("DirJobs", "lastdir", self.current_dir)
+
+        # Load existing config mapping if present
+        conf = self._read_dir_conf(self.current_dir)
+
+        # List accepted gcode files (case-insensitive), sorted alphabetically
+        try:
+            exts = {".nc", ".ngc", ".gcode", ".tap", ".cnc"}
+            all_files = [
+                f for f in os.listdir(self.current_dir)
+                if os.path.isfile(os.path.join(self.current_dir, f))
+            ]
+            files = [
+                f for f in all_files
+                if os.path.splitext(f)[1].lower() in exts
+            ]
+            # Fallback: try simple endswith check if splitext found none
+            if not files and all_files:
+                alt = [f for f in all_files if any(f.lower().endswith(x) for x in exts)]
+                if alt:
+                    files = alt
+            # Debug print to console to help diagnose filter issues
+            try:
+                print(f"[DirJobs] Scanned folder: {self.current_dir}")
+                print(f"[DirJobs] Total files: {len(all_files)}, matched: {len(files)}")
+                if all_files and not files:
+                    print("[DirJobs] Sample file extensions:", [os.path.splitext(f)[1] for f in all_files[:10]])
+            except Exception:
+                pass
+        except OSError as e:
+            messagebox.showerror(_("Error"), str(e), parent=self)
+            return
+
+        files.sort(key=lambda s: s.lower())
+
+        # Populate table
+        self.table.delete(0, END)
+        for fn in files:
+            tool = conf.get(fn, "")
+            self.table.insert(END, (fn, str(tool) if tool != "" else ""))
+        # Update status label (matched/total)
+        try:
+            self.status_label.config(text=f"{self.current_dir}  (files: {len(files)}/{len(all_files)})")
+        except Exception:
+            pass
+        if not files:
+            try:
+                messagebox.showinfo(_("No files"), _("No supported gcode files found in folder"), parent=self)
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    def save_dir(self):
+        if not self.current_dir:
+            messagebox.showwarning(_("No directory"), _("Load a directory first"), parent=self)
+            return
+        mapping = {}
+        for i in range(self.table.size()):
+            row = self.table.get(i)
+            try:
+                name = row[0]
+                tool_str = row[1]
+            except Exception:
+                continue
+            tool_str = (tool_str or "").strip()
+            if tool_str == "":
+                continue
+            try:
+                tool = int(tool_str)
+            except Exception:
+                # Skip non-integer entries
+                continue
+            mapping[name] = tool
+
+        try:
+            self._write_dir_conf(self.current_dir, mapping)
+        except Exception as e:
+            messagebox.showerror(_("Error"), str(e), parent=self)
+            return
+        messagebox.showinfo(_("Saved"), _("Saved dir.conf"), parent=self)
+
+    # ------------------------------------------------------------------
+    def edit_tool(self, event=None):
+        # Edit active row tool cell as integer
+        try:
+            tkExtra.InPlaceInteger(self.table.listbox(1))
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    def move_up(self):
+        try:
+            self.table.moveUp()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    def move_down(self):
+        try:
+            self.table.moveDown()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    def delete_rows(self):
+        sel = list(map(int, self.table.curselection()))
+        if not sel:
+            return
+        sel.sort(reverse=True)
+        for i in sel:
+            try:
+                self.table.delete(i)
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    def _conf_path(self, directory):
+        return os.path.join(directory, "dir.conf")
+
+    # ------------------------------------------------------------------
+    def _read_dir_conf(self, directory):
+        mapping = {}
+        cfg = self._conf_path(directory)
+        if not os.path.isfile(cfg):
+            return mapping
+        try:
+            with open(cfg, "r", encoding="utf-8") as f:
+                for line in f:
+                    s = line.strip()
+                    if not s or s.startswith("#"):
+                        continue
+                    # Expect format: filename,tool
+                    parts = [p.strip() for p in s.split(",", 1)]
+                    if len(parts) != 2:
+                        continue
+                    fn, tool_s = parts
+                    try:
+                        mapping[fn] = int(tool_s)
+                    except Exception:
+                        # ignore invalid entries
+                        pass
+        except Exception:
+            # ignore read errors; start fresh
+            return {}
+        return mapping
+
+    # ------------------------------------------------------------------
+    def _write_dir_conf(self, directory, mapping):
+        cfg = self._conf_path(directory)
+        lines = [
+            "# bCNC directory tool mapping\n",
+            "# filename,tool_number\n",
+        ]
+        for fn, tool in mapping.items():
+            lines.append(f"{fn},{int(tool)}\n")
+        with open(cfg, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+
+# =============================================================================
 # Serial Frame
 # =============================================================================
 class SerialFrame(CNCRibbon.PageLabelFrame):
@@ -450,6 +726,17 @@ class FilePage(CNCRibbon.Page):
     # Add a widget in the widgets list to enable disable during the run
     # ----------------------------------------------------------------------
     def register(self):
+        # Register groups and frames (creates instances in global dictionaries)
         self._register(
-            (FileGroup, PendantGroup, OptionsGroup, CloseGroup), (SerialFrame,)
+            (FileGroup, PendantGroup, OptionsGroup, CloseGroup), (SerialFrame, DirJobsFrame)
         )
+        # Explicitly add frames so Ribbon.changePage packs them
+        # (Serial first, then directory jobs below)
+        try:
+            self.addPageFrame("Serial", side=TOP, fill=BOTH)
+        except Exception:
+            pass
+        try:
+            self.addPageFrame("DirJobs", side=TOP, fill=BOTH)
+        except Exception:
+            pass
