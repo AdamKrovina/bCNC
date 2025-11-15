@@ -5,6 +5,9 @@
 
 import os
 import sys
+import time
+
+from typing import Optional
 from tkinter import (
     YES,
     W,
@@ -23,6 +26,8 @@ from tkinter import (
     Checkbutton,
     Label,
     Menu,
+    NORMAL,
+    DISABLED,
 )
 import CNCRibbon
 import Ribbon
@@ -32,9 +37,20 @@ import bFileDialog
 from tkinter import messagebox
 
 from Helpers import N_
+# We'll access the Control page instance directly from app.pages['Control'].
+# Avoid importing ControlPage here to prevent class identity mismatches.
 
 __author__ = "Vasilis Vlachoudis"
 __email__ = "vvlachoudis@gmail.com"
+
+# Ensure translation function _ is defined for lint/static analysis; runtime may set it earlier.
+try:
+    _  # type: ignore[name-defined]
+except NameError:  # pragma: no cover
+    try:
+        from gettext import gettext as _  # fallback
+    except Exception:  # pragma: no cover
+        _ = lambda s: s
 
 try:
     from serial.tools.list_ports import comports
@@ -280,6 +296,7 @@ class DirJobsFrame(CNCRibbon.PageLabelFrame):
         CNCRibbon.PageLabelFrame.__init__(self, master, "DirJobs", _("Directory jobs"), app)
 
         self.current_dir = None
+        self._dir_running = False  # prevent re-entrancy
         # Controls row
         ctrl = Frame(self)
         ctrl.pack(side=TOP, fill=X)
@@ -306,31 +323,20 @@ class DirJobsFrame(CNCRibbon.PageLabelFrame):
         self.save_btn.pack(side=LEFT, padx=2, pady=2)
         tkExtra.Balloon.set(self.save_btn, _("Save filename→tool mapping to dir.conf in the selected directory"))
 
+        self.run_btn = Ribbon.LabelButton(
+            ctrl,
+            text=_("Run dir"),
+            image=Utils.icons.get("start32"),
+            compound=LEFT,
+            command=self.run_dir,
+            background=Ribbon._BACKGROUND,
+        )
+        self.run_btn.pack(side=LEFT, padx=2, pady=2)
+        tkExtra.Balloon.set(self.run_btn, _("Sequentially run each file: set tool then load and start job"))
+
         # Spacer expands to push move/delete buttons to right
         spacer = Frame(ctrl)
         spacer.pack(side=LEFT, expand=YES, fill=X)
-
-        self.up_btn = Ribbon.LabelButton(
-            ctrl,
-            text=_("Up"),
-            image=Utils.icons.get("up"),
-            compound=LEFT,
-            command=self.move_up,
-            background=Ribbon._BACKGROUND,
-        )
-        self.up_btn.pack(side=LEFT, padx=2, pady=2)
-        tkExtra.Balloon.set(self.up_btn, _("Move selected row up"))
-
-        self.down_btn = Ribbon.LabelButton(
-            ctrl,
-            text=_("Down"),
-            image=Utils.icons.get("down"),
-            compound=LEFT,
-            command=self.move_down,
-            background=Ribbon._BACKGROUND,
-        )
-        self.down_btn.pack(side=LEFT, padx=2, pady=2)
-        tkExtra.Balloon.set(self.down_btn, _("Move selected row down"))
 
         self.del_btn = Ribbon.LabelButton(
             ctrl,
@@ -473,20 +479,6 @@ class DirJobsFrame(CNCRibbon.PageLabelFrame):
             pass
 
     # ------------------------------------------------------------------
-    def move_up(self):
-        try:
-            self.table.moveUp()
-        except Exception:
-            pass
-
-    # ------------------------------------------------------------------
-    def move_down(self):
-        try:
-            self.table.moveDown()
-        except Exception:
-            pass
-
-    # ------------------------------------------------------------------
     def delete_rows(self):
         sel = list(map(int, self.table.curselection()))
         if not sel:
@@ -499,8 +491,373 @@ class DirJobsFrame(CNCRibbon.PageLabelFrame):
                 pass
 
     # ------------------------------------------------------------------
+    def run_dir(self):
+        # Validate directory
+        if not self.current_dir:
+            messagebox.showwarning(_("No directory"), _("Load a directory first"), parent=self)
+            return
+        # Prevent re-entrancy
+        if getattr(self, "_dir_running", False):
+            messagebox.showwarning(_("Busy"), _("Directory run already in progress"), parent=self)
+            return
+        # Prevent starting while a run is in progress
+        if getattr(self.app, "running", False):
+            messagebox.showwarning(_("Busy"), _("Controller already running"), parent=self)
+            return
+        jobs = []
+        for i in range(self.table.size()):
+            try:
+                fn, tool_str = self.table.get(i)
+            except Exception:
+                continue
+            tool_str = (tool_str or "").strip()
+            if tool_str == "":
+                messagebox.showerror(_("Tool missing"), _("Row {} has no tool number").format(i + 1), parent=self)
+                return
+            try:
+                tool = int(tool_str)
+            except Exception:
+                messagebox.showerror(_("Invalid tool"), _("Row {} has invalid tool number: {}").format(i + 1, tool_str), parent=self)
+                return
+            jobs.append((fn, tool))
+        if not jobs:
+            messagebox.showinfo(_("No jobs"), _("No rows to run"), parent=self)
+            return
+        self._dir_run_jobs = jobs
+        self._dir_running = True
+        self.run_btn.config(state=DISABLED)
+        try:
+            print(f"[DirJobs] Starting directory run with {len(jobs)} jobs")
+        except Exception:
+            pass
+        self._run_next_job()
+
+    # ------------------------------------------------------------------
+    def _run_next_job(self):
+        if not getattr(self, "_dir_run_jobs", None):
+            self.run_btn.config(state=NORMAL)
+            self._dir_running = False
+            messagebox.showinfo(_("Done"), _("Directory run completed"), parent=self)
+            try:
+                print("[DirJobs] All jobs completed")
+            except Exception:
+                pass
+            return
+        fn, tool = self._dir_run_jobs.pop(0)
+        fullpath = os.path.join(self.current_dir, fn)
+        if not os.path.isfile(fullpath):
+            messagebox.showerror(_("Missing file"), _("File not found: {}\nAborting run.").format(fullpath), parent=self)
+            self._dir_run_jobs = []
+            self.run_btn.config(state=NORMAL)
+            self._dir_running = False
+            return
+        control_target = self._locate_control_tool_frame()
+        try:
+            page_info = [(name, type(p).__name__, hasattr(p, 'setTool')) for name, p in getattr(self.app, 'pages', {}).items()]
+            print(f"[DirJobs] Page inventory: {page_info}")
+        except Exception:
+            pass
+        if not control_target:
+            try:
+                print("[DirJobs] ControlFrame unavailable. Existing pages:", list(self.app.pages.keys()))
+            except Exception:
+                pass
+            messagebox.showerror(_("ATC"), _("Control page tool change unavailable"), parent=self)
+            self._dir_run_jobs = []
+            self.run_btn.config(state=NORMAL)
+            self._dir_running = False
+            return
+        try:
+            ok = control_target.setTool(new_tool=tool)
+        except Exception as e:
+            messagebox.showerror(_("ATC"), _("Tool change failed: {}\nAborting.").format(e), parent=self)
+            self._dir_run_jobs = []
+            self.run_btn.config(state=NORMAL)
+            self._dir_running = False
+            return
+        if not ok:
+            messagebox.showerror(_("ATC"), _("Tool change failed or aborted. Stopping."), parent=self)
+            self._dir_run_jobs = []
+            self.run_btn.config(state=NORMAL)
+            self._dir_running = False
+            return
+        # Small recovery pause after tool change/probe before loading next file
+        try:
+            print("[DirJobs] Post-ATC pause 1.0s before loading next file")
+        except Exception:
+            pass
+        t_atc = time.time()
+        while time.time() - t_atc < 1.0:
+            try:
+                self.app.update()
+            except Exception:
+                pass
+            time.sleep(0.05)
+        try:
+            print(f"[DirJobs] Job start: tool {tool} file {fn}")
+        except Exception:
+            pass
+        # Run file with synchronous wait + post-run pause
+        if not self._run_file_and_wait(fullpath, pause_after=7.0):
+            self._dir_run_jobs = []
+            self.run_btn.config(state=NORMAL)
+            self._dir_running = False
+            return
+        # Schedule next job after a tiny idle tick to avoid recursion depth
+        self.after(10, self._run_next_job)
+
+    # ------------------------------------------------------------------
+    def _wait_job_complete(self):
+        # Deprecated: synchronous _run_file_and_wait handles waiting & pause
+        pass
+
+    # ------------------------------------------------------------------
+    def _locate_control_tool_frame(self) -> Optional[object]:
+        """Return the frame (not the page) that implements setTool.
+        ControlPage itself does not define setTool; the method lives on ControlFrame.
+        """
+        pages = getattr(self.app, 'pages', {})
+        ctrl_page = pages.get('Control')
+        if ctrl_page is not None:
+            # ctrl_page.frames is list of (frame, args)
+            for frame, _args in getattr(ctrl_page, 'frames', []):
+                if hasattr(frame, 'setTool'):
+                    try:
+                        print(f"[DirJobs] Found setTool on frame '{getattr(frame,'name', type(frame).__name__)}' type={type(frame).__name__}")
+                    except Exception:
+                        pass
+                    return frame
+        # Global fallback: scan all page.frame tuples
+        for page in pages.values():
+            for frame, _args in getattr(page, 'frames', []):
+                if hasattr(frame, 'setTool'):
+                    try:
+                        print(f"[DirJobs] Fallback found setTool on frame '{getattr(frame,'name', type(frame).__name__)}' in page '{getattr(page,'name','?')}'")
+                    except Exception:
+                        pass
+                    return frame
+        return None
+
+    # ------------------------------------------------------------------
     def _conf_path(self, directory):
         return os.path.join(directory, "dir.conf")
+
+    # ------------------------------------------------------------------
+    def _run_file_and_wait(self, fullpath, wait_before=5.0, wait_after=360000.0, pause_after=1.0):
+        """Synchronne spustí g-code súbor a aktívne čaká na dokončenie.
+
+        Kroky:
+        1. Počká (max wait_before sekúnd), kým predchádzajúci beh skončí.
+        2. Načíta súbor (self.app.load).
+        3. Spustí beh (self.app.run) – ten pripraví frontu a nastaví _runLines.
+        4. Polling slučka s self.app.update() kým self.app.running je True alebo nevyprší wait_after.
+        5. Overí, či bol počet vykonaných riadkov (_last_run_completed) >= očakávané (_runLines).
+        6. Vloží pauzu pause_after sekúnd na zotavenie kontroléra.
+
+        Vráti True na úspech, False na zlyhanie (už s UI hláškou).
+        """
+        try:
+            print(f"[DirJobs] Preparing to run file: {fullpath}")
+        except Exception:
+            pass
+        # 1. počkaj na predchádzajúci beh
+        t0 = time.time()
+        while time.time() - t0 < wait_before and getattr(self.app, 'running', False):
+            try:
+                self.app.update()
+            except Exception:
+                pass
+            time.sleep(0.05)
+        if getattr(self.app, 'running', False):
+            messagebox.showerror(_("Run error"), _("Previous run still active; aborting."), parent=self)
+            return False
+        # 2. load
+        try:
+            self.app.load(fullpath)
+        except Exception as e:
+            messagebox.showerror(_("Load error"), _("Failed to load {}: {}\nAborting.").format(fullpath, e), parent=self)
+            return False
+        # 3. run
+        try:
+            self.app.run()
+        except Exception as e:
+            messagebox.showerror(_("Run error"), _("Failed to start run: {}\nAborting.").format(e), parent=self)
+            return False
+        expected = getattr(self.app, '_runLines', None)
+        try:
+            print(f"[DirJobs] Active wait: expected_run_lines={expected}")
+        except Exception:
+            pass
+        # 4. čakaj na dokončenie alebo timeout
+        t1 = time.time()
+        while time.time() - t1 < wait_after and getattr(self.app, 'running', False):
+            try:
+                self.app.update()
+            except Exception:
+                pass
+            time.sleep(0.05)
+        if getattr(self.app, 'running', False):
+            messagebox.showerror(_("Run timeout"), _("File run timeout"), parent=self)
+            return False
+        # 5. over počet riadkov
+        gcount = getattr(self.app, '_last_run_completed', None)
+        try:
+            print(f"[DirJobs] Run finished (initial): gcount={gcount} expected={expected}")
+        except Exception:
+            pass
+        # Stabilization loop: allow gcount to settle/increase for up to 1s (reset timer on change)
+        stab_deadline = time.time() + 1.0
+        last = gcount
+        while time.time() < stab_deadline:
+            try:
+                self.app.update()
+            except Exception:
+                pass
+            time.sleep(0.05)
+            current = getattr(self.app, '_last_run_completed', None)
+            if current != last:
+                last = current
+                stab_deadline = time.time() + 0.5  # extend a bit after each change
+            # Early break if we already reached expected
+            if expected and current is not None and current >= expected:
+                break
+        gcount = last
+        try:
+            print(f"[DirJobs] Run finished (stabilized): gcount={gcount} expected={expected}")
+        except Exception:
+            pass
+        # Strict validation with single zero-line retry + finalization wait for late increments
+        if expected is not None and gcount is not None and gcount != expected:
+            if gcount == 0 and expected > 0 and not getattr(self, '_retried_once', False):
+                # Zero-line premature end: first observe for late activity before retrying
+                try:
+                    print(f"[DirJobs] Detected zero-line premature end (expected={expected}). Observing 2s for late activity...")
+                except Exception:
+                    pass
+                t_obs = time.time()
+                late_progress = False
+                while time.time() - t_obs < 2.0:
+                    try:
+                        self.app.update()
+                    except Exception:
+                        pass
+                    time.sleep(0.05)
+                    if getattr(self.app, 'running', False):
+                        late_progress = True
+                        break
+                    cur = getattr(self.app, '_last_run_completed', 0) or 0
+                    if cur > 0:
+                        late_progress = True
+                        break
+                if late_progress:
+                    try:
+                        print("[DirJobs] Late activity detected; waiting for first run to finalize (skip retry)")
+                    except Exception:
+                        pass
+                    # Wait for completion of the original run
+                    t_wait = time.time()
+                    while time.time() - t_wait < wait_after and getattr(self.app, 'running', False):
+                        try:
+                            self.app.update()
+                        except Exception:
+                            pass
+                        time.sleep(0.05)
+                    # Short finalization window to capture last gcount
+                    t_fin = time.time()
+                    while time.time() - t_fin < 1.0:
+                        try:
+                            self.app.update()
+                        except Exception:
+                            pass
+                        time.sleep(0.05)
+                    gcount = getattr(self.app, '_last_run_completed', None)
+                    try:
+                        print(f"[DirJobs] First run finalized: gcount={gcount} expected={expected}")
+                    except Exception:
+                        pass
+                else:
+                    # Proceed with a single retry after cooldown
+                    self._retried_once = True
+                    try:
+                        print(f"[DirJobs] No late activity; retrying run once after 2s cooldown…")
+                    except Exception:
+                        pass
+                    t_retry = time.time()
+                    while time.time() - t_retry < 2.0:  # extended cooldown
+                        try:
+                            self.app.update()
+                        except Exception:
+                            pass
+                        time.sleep(0.05)
+                    try:
+                        self.app.emptyQueue()
+                    except Exception:
+                        pass
+                    try:
+                        self.app.run()
+                    except Exception as e:
+                        messagebox.showerror(_("Run error"), _("Retry failed to start: {}\nAborting.").format(e), parent=self)
+                        return False
+                    expected = getattr(self.app, '_runLines', expected)
+                    try:
+                        print(f"[DirJobs] Retry active wait: expected_run_lines={expected}")
+                    except Exception:
+                        pass
+                    t1b = time.time()
+                    while time.time() - t1b < wait_after and getattr(self.app, 'running', False):
+                        try:
+                            self.app.update()
+                        except Exception:
+                            pass
+                        time.sleep(0.05)
+                    gcount = getattr(self.app, '_last_run_completed', None)
+                    try:
+                        print(f"[DirJobs] Retry finished: gcount={gcount} expected={expected}")
+                    except Exception:
+                        pass
+                    self._retried_once = False
+            # Finalization wait for partial completion (allow late increments)
+            if gcount is not None and expected is not None and 0 < gcount < expected:
+                try:
+                    print(f"[DirJobs] Finalization wait: current={gcount} expected={expected} (up to 2s)")
+                except Exception:
+                    pass
+                fin_deadline = time.time() + 2.0
+                prev = gcount
+                while time.time() < fin_deadline and prev < expected:
+                    try:
+                        self.app.update()
+                    except Exception:
+                        pass
+                    time.sleep(0.05)
+                    cur = getattr(self.app, '_last_run_completed', prev)
+                    if cur != prev:
+                        prev = cur
+                        try:
+                            print(f"[DirJobs] Finalization progress: {prev}/{expected}")
+                        except Exception:
+                            pass
+                gcount = prev
+                try:
+                    print(f"[DirJobs] Finalization done: gcount={gcount} expected={expected}")
+                except Exception:
+                    pass
+            if expected is not None and gcount is not None and gcount != expected:
+                messagebox.showerror(_("Run error"), _("Run ended prematurely ({} != {})").format(gcount, expected), parent=self)
+                return False
+        # 6. post-run pauza
+        try:
+            print(f"[DirJobs] Post-run pause {pause_after}s for controller recovery")
+        except Exception:
+            pass
+        t2 = time.time()
+        while time.time() - t2 < pause_after:
+            try:
+                self.app.update()
+            except Exception:
+                pass
+            time.sleep(0.05)
+        return True
 
     # ------------------------------------------------------------------
     def _read_dir_conf(self, directory):
