@@ -2531,6 +2531,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
     def loadATCConfig(self):
         # Load ATC configuration: holder positions and setter position
         # Holder positions: ATC.holderX1 / ATC.holderY1, holderX2/Y2 ... (1-based)
+        # Approach positions: ATC.approachX1 / approachY1 / approachZ1 ... (1-based, optional)
         # Setter position: ATC.setterX / ATC.setterY / ATC.setterZ
         # Tolerance: ATC.tol
         try:
@@ -2542,7 +2543,20 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                 except Exception:
                     x = None
                     y = None
-                holders.append((x, y))
+                # Load optional approach positions
+                try:
+                    ax = Utils.getFloat("ATC", f"approachX{i+1}")
+                except Exception:
+                    ax = None
+                try:
+                    ay = Utils.getFloat("ATC", f"approachY{i+1}")
+                except Exception:
+                    ay = None
+                try:
+                    az = Utils.getFloat("ATC", f"approachZ{i+1}")
+                except Exception:
+                    az = None
+                holders.append((x, y, ax, ay, az))
             self.atc_holders = holders
         except Exception:
             self.atc_holders = []
@@ -2726,18 +2740,28 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             # provided by the user. If anything goes wrong, fall back to the
             # original simple holder moves.
             try:
-                # Calculate any offsets used in the user's example (Y - 30)
-                y_minus_30 = holder[1] - 30.0
+                # Check if approach position is fully defined
+                if len(holder) >= 5 and holder[2] is not None and holder[3] is not None and holder[4] is not None:
+                    approach_x = holder[2]
+                    approach_y = holder[3]
+                    approach_z = holder[4]
+                else:
+                    # Approach position not configured: abort with error
+                    messagebox.showerror(
+                        _("ATC Error"),
+                        _("Approach position (approachX, approachY, approachZ) not configured for holder {}. Please configure in bCNC.ini [ATC] section.").format(cur_tool)
+                    )
+                    return False
 
                 unload_lines = [
                     ("G53 G0 Z-1", True),
-                    (f"G53 G0 X{holder[0]:g} Y{y_minus_30:g}", True),
-                    ("G53 G0 Z-150", True),
+                    (f"G53 G0 X{approach_x:g} Y{approach_y:g}", True),
+                    (f"G53 G0 Z{approach_z:g}", True),
                     (f"G53 G0 Y{holder[1]:g}", True),
                     ("G4 P0", True),
                     ("M106 ;release", False),
                     ("G4 P0.2", True),
-                    ("G53 G0 Z-80", True),
+                    (f"G53 G0 Z{approach_z + 70:g}", True),
                     ("G4 P0", True),
                     ("M107 ;clamp", False),
                     ("G53 G0 Z-1", True),
@@ -2754,7 +2778,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                     if do_wait:
                         unload_run_lines.append("%wait")
 
-                ok = run_lines_and_wait(self.app, unload_run_lines, wait_before=5.0, wait_after=20.0)
+                ok = run_lines_and_wait(self.app, unload_run_lines, wait_before=5.0, wait_after=40.0)
                 if not ok:
                     # failed to run unload sequence in time
                     print("Failed to run unload sequence in time");
@@ -2781,11 +2805,11 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                     # user declined fallback: abort operation
                     return False
         else:
-            # fallback: use configured Probe change (tool change) location
-            fallback_lines = ["G53 G0 Z[toolchangez]", "G53 G0 X[toolchangex] Y[toolchangey]"]
-            ok = run_lines_and_wait(self.app, fallback_lines, wait_before=5.0, wait_after=20.0)
-            if not ok:
-                return False
+            messagebox.showerror(
+                _("ATC Error"),
+                _("Holder position not configured for current tool {}. Please configure in bCNC.ini [ATC] section.").format(cur_tool)   
+            )
+            return False
             
 
         print("ATC set new tool");
@@ -2804,18 +2828,31 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         # Try automatic load sequence to grab the new tool and measure it
         if holder and holder[0] is not None and holder[1] is not None:
             try:
+                # Check if approach position is fully defined
+                if len(holder) >= 5 and holder[2] is not None and holder[3] is not None and holder[4] is not None:
+                    approach_x = holder[2]
+                    approach_y = holder[3]
+                    approach_z = holder[4]
+                else:
+                    # Approach position not configured: abort with error
+                    messagebox.showerror(
+                        _("ATC Error"),
+                        _("Approach position (approachX, approachY, approachZ) not configured for holder {}. Please configure in bCNC.ini [ATC] section.").format(new_tool)
+                    )
+                    return False
+
                 # Load sequence provided by user
                 load_lines = [
                     ("G53 G0 Z-1", True),
                     (f"G53 G0 X{holder[0]:g} Y{holder[1]:g}", True),
-                    ("G53 G0 Z-80", True),
+                    (f"G53 G0 Z{approach_z + 70:g}", True),
                     ("G4 P0", False),
                     ("M106 ;release", False),
-                    ("G53 G0 Z-150", True),
+                    (f"G53 G0 Z{approach_z:g}", True),
                     ("G4 P0", False),
                     ("M107 ;clamp", False),
                     ("G4 P0.4", False),
-                    (f"G53 G0 X{holder[0]:g} Y{holder[1]-30.0:g}", True),
+                    (f"G53 G0 X{approach_x:g} Y{approach_y:g}", True),
                     ("G53 G0 Z-1", True),
                 ]
 
