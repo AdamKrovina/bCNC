@@ -583,11 +583,11 @@ class DirJobsFrame(CNCRibbon.PageLabelFrame):
             return
         # Small recovery pause after tool change/probe before loading next file
         try:
-            print("[DirJobs] Post-ATC pause 1.0s before loading next file")
+            print("[DirJobs] Post-ATC pause 5.0s before loading next file")
         except Exception:
             pass
         t_atc = time.time()
-        while time.time() - t_atc < 1.0:
+        while time.time() - t_atc < 5.0:
             try:
                 self.app.update()
             except Exception:
@@ -643,7 +643,7 @@ class DirJobsFrame(CNCRibbon.PageLabelFrame):
         return os.path.join(directory, "dir.conf")
 
     # ------------------------------------------------------------------
-    def _run_file_and_wait(self, fullpath, wait_before=5.0, wait_after=360000.0, pause_after=1.0):
+    def _run_file_and_wait(self, fullpath, wait_before=10.0, wait_after=360000.0, pause_after=2.0):
         """Synchronne spustí g-code súbor a aktívne čaká na dokončenie.
 
         Kroky:
