@@ -56,6 +56,15 @@ from Helpers import N_
 __author__ = "Vasilis Vlachoudis"
 __email__ = "vvlachoudis@gmail.com"
 
+# Fallback definition of translation function _ if not provided by runtime
+try:
+    _  # noqa: F821
+except NameError:  # pragma: no cover
+    try:
+        from gettext import gettext as _
+    except Exception:
+        _ = lambda s: s
+
 
 # ----------------------------------------------------------------------
 # Helper: run_lines_and_wait
@@ -2113,6 +2122,28 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         b.grid(row=row, column=col, sticky=W)
         self.addWidget(b)
 
+        # Update-only option: skip measuring current tool, adopt new tool measurement directly
+        col += 1
+        try:
+            self.atc_update_only = BooleanVar(value=False)
+            cb_upd = Checkbutton(
+                f,
+                text=_("upd-only"),
+                variable=self.atc_update_only,
+                padx=1,
+                pady=1,
+                onvalue=True,
+                offvalue=False,
+            )
+            cb_upd.grid(row=row, column=col, sticky=W)
+            tkExtra.Balloon.set(
+                cb_upd,
+                _("ATC: Skip measuring current tool; measure new tool and write measured TLO into table without tolerance checks."),
+            )
+            self.addWidget(cb_upd)
+        except Exception:
+            pass
+
         # Plane
         col += 1
         Label(f, text=_("Plane:")).grid(row=row, column=col, sticky=E)
@@ -2577,7 +2608,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         return result
         
     # ----------------------------------------------------------------------
-    def setTool(self, event=None, new_tool=None):
+    def setTool(self, event=None, new_tool=None, update_only=False):
         # Semi-automatic ATC helper.
         # Sequence:
         #  1) measure current tool on tool setter (probe)
@@ -2598,9 +2629,20 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                 messagebox.showerror(_("ATC error"), _("Invalid tool number"))
                 return False
             
+        # Allow UI checkbox to force update-only behavior (skip measuring current tool
+        # and just adopt measured new tool TLO into table without comparison).
+        if not update_only:
+            try:
+                # Checkbox may be created later; ignore if absent
+                if getattr(self, "atc_update_only", None) is not None and self.atc_update_only.get():
+                    update_only = True
+            except Exception:
+                pass
+
         cur_tool = int(CNC.vars.get("tool", 0) or 0)
         if cur_tool == new_tool:
-            messagebox.showinfo(_("ATC"), _("Already using requested tool"))
+            #messagebox.showinfo(_("ATC"), _("Already using requested tool"))
+            #just continue silently
             return True
 
         # Use class helper self._run_lines_and_wait to submit sequences and wait
@@ -2617,8 +2659,8 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         
         print("ATCa");
 
-        # measure current tool
-        if(True):
+        # measure current tool (skip entirely if update_only)
+        if not update_only:
             measured_old = self._probeMeasure()
             if measured_old is None:
                 messagebox.showerror(_("ATC"), _("Failed to measure current tool"))
@@ -2652,22 +2694,15 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             print("tol %.3f" % (tol))
 
             if expected_old is None:
-                ans = messagebox.askyesno(
-                    _("ATC"),
-                    _(
-                        "No expected TLO for current tool in table. Continue anyway?"
-                    ),
-                )
-                if not ans:
-                    self.app.log.put((Sender.Sender.MSG_ERROR, "ATC: Aborted - no expected TLO for current tool"))
-                    return False
+                # Just log and continue silently when no expected value exists
+                self.app.log.put((Sender.Sender.MSG_SEND, "ATC: No expected old TLO; continuing"))
             else:
                 if abs(measured_tlo_old - expected_old) > tol:
                     ans = messagebox.askyesno(
-                        _("ATC Error"), 
-                        _("Current tool measurement {:.3f} not within tolerance {:.3f} of expected {:.3f}. Continue anyway?").format(
-                            measured_tlo_old, tol, expected_old
-                        )
+                        _("ATC Error"),
+                        _(
+                            "Current tool measurement {:.3f} differs from expected {:.3f} by more than tolerance {:.3f}. Continue?"
+                        ).format(measured_tlo_old, expected_old, tol),
                     )
                     if not ans:
                         self.app.log.put((Sender.Sender.MSG_ERROR, "ATC: Aborted - current tool measurement out of tolerance"))
@@ -2804,21 +2839,29 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
 
                 measured_tlo_new = float(CNC.vars.get("prbz", 0.0)) - float(CNC.vars.get("toolmz", 0.0))
                 try:
-                    expected_new = float(self.tlo1[new_tool - 1].get())
+                    existing_cell = self.tlo1[new_tool - 1]
+                    expected_new = float(existing_cell.get())
                 except Exception:
                     expected_new = None
 
-                if expected_new is None:
-                    # No expected in table: accept measured value automatically
+                if update_only:
+                    # Directly adopt measured value: update table cell and skip comparisons
+                    try:
+                        self.tlo1[new_tool - 1].set(f"{measured_tlo_new:.3f}")
+                    except Exception:
+                        pass
                     final_tlo = measured_tlo_new
                 else:
-                    if abs(measured_tlo_new - expected_new) > tol:
-                        messagebox.showerror(
-                            _("ATC"),
-                            _("New tool measurement not within tolerance. Aborting ATC."),
-                        )
-                        return False
-                    final_tlo = expected_new
+                    if expected_new is None:
+                        final_tlo = measured_tlo_new
+                    else:
+                        if abs(measured_tlo_new - expected_new) > tol:
+                            messagebox.showerror(
+                                _("ATC"),
+                                _("New tool measurement not within tolerance. Aborting ATC."),
+                            )
+                            return False
+                        final_tlo = expected_new
 
                 # send G43.1 to set TLO for new tool first
                 self.sendGCode(f"G43.1Z{final_tlo:g}")
@@ -2842,6 +2885,12 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                         pass
                     return False
 
+                # Persist TLO table change immediately when update_only active
+                if update_only:
+                    try:
+                        self.saveConfig()
+                    except Exception:
+                        pass
                 self.app.mcontrol.viewParameters()
                 # Success: do not show the manual swap messagebox
                 return True
@@ -2876,28 +2925,36 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
 
                 measured_tlo_new = float(CNC.vars.get("prbz", 0.0)) - float(CNC.vars.get("toolmz", 0.0))
                 try:
-                    expected_new = float(self.tlo1[new_tool - 1].get())
+                    existing_cell = self.tlo1[new_tool - 1]
+                    expected_new = float(existing_cell.get())
                 except Exception:
                     expected_new = None
 
-                if expected_new is None:
-                    ans2 = messagebox.askyesno(
-                        _("ATC"),
-                        _(
-                            "No expected TLO for new tool in table. Accept measured value and continue?"
-                        ),
-                    )
-                    if not ans2:
-                        return False
+                if update_only:
+                    try:
+                        self.tlo1[new_tool - 1].set(f"{measured_tlo_new:.3f}")
+                    except Exception:
+                        pass
                     final_tlo = measured_tlo_new
                 else:
-                    if abs(measured_tlo_new - expected_new) > tol:
-                        messagebox.showerror(
+                    if expected_new is None:
+                        ans2 = messagebox.askyesno(
                             _("ATC"),
-                            _("New tool measurement not within tolerance. Aborting ATC."),
+                            _(
+                                "No expected TLO for new tool in table. Accept measured value and continue?"
+                            ),
                         )
-                        return False
-                    final_tlo = expected_new
+                        if not ans2:
+                            return False
+                        final_tlo = measured_tlo_new
+                    else:
+                        if abs(measured_tlo_new - expected_new) > tol:
+                            messagebox.showerror(
+                                _("ATC"),
+                                _("New tool measurement not within tolerance. Aborting ATC."),
+                            )
+                            return False
+                        final_tlo = expected_new
 
                 # Send G43.1 to set TLO for new tool first
                 self.sendGCode(f"G43.1Z{final_tlo:g}")
@@ -2920,6 +2977,11 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                     except Exception:
                         pass
                     return False
+                if update_only:
+                    try:
+                        self.saveConfig()
+                    except Exception:
+                        pass
                 self.app.mcontrol.viewParameters()
                 return True
 
