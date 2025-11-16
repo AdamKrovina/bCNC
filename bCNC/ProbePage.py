@@ -386,8 +386,15 @@ class ProbeCommonFrame(CNCRibbon.PageFrame):
     # ------------------------------------------------------------------------
     def tloSet(self, event=None):
         try:
-            CNC.vars["TLO"] = float(ProbeCommonFrame.tlo.get())
-            cmd = f"G43.1Z{ProbeCommonFrame.tlo.get()}"
+            tlo = float(ProbeCommonFrame.tlo.get())
+            # Get current machine position Z
+            current_mz = float(CNC.vars.get("mz", 0.0))
+            # Calculate absolute WCS Z offset: machine position - TLO
+            # This gives the machine coordinate where work Z=0 should be
+            wcoz = current_mz - tlo
+            print(f"DEBUG ProbePage tloSet: current_mz={current_mz}, tlo={tlo}, wcoz={wcoz}")
+            # Use G10 L2 to set absolute Z offset in WCS (persists in EEPROM)
+            cmd = f"G10 L2 P1 Z{wcoz:g}"
             self.sendGCode(cmd)
         except Exception:
             pass
@@ -408,14 +415,9 @@ class ProbeCommonFrame(CNCRibbon.PageFrame):
 
     # ------------------------------------------------------------------------
     def updateTlo(self):
-        try:
-            if self.focus_get() is not ProbeCommonFrame.tlo:
-                state = ProbeCommonFrame.tlo.cget("state")
-                state = ProbeCommonFrame.tlo["state"] = NORMAL
-                ProbeCommonFrame.tlo.set(str(CNC.vars.get("TLO", "")))
-                state = ProbeCommonFrame.tlo["state"] = state
-        except Exception:
-            pass
+        # TLO now managed via WCS offsets (G10 L20), not CNC.vars["TLO"]
+        # This method no longer needed but kept for compatibility
+        pass
 
     # -----------------------------------------------------------------------
     def saveConfig(self):

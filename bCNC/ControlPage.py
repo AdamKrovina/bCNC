@@ -2478,7 +2478,14 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
     def setTLO(self, event=None):
         try:
             tlo = float(self.tlo.get())
-            self.sendGCode(f"G43.1Z{tlo:g}")
+            # Get current machine position Z
+            current_mz = float(CNC.vars.get("mz", 0.0))
+            # Calculate absolute WCS Z offset: machine position - TLO
+            # This gives the machine coordinate where work Z=0 should be
+            wcoz = current_mz - tlo
+            print(f"DEBUG setTLO: current_mz={current_mz}, tlo={tlo}, wcoz={wcoz}")
+            # Use G10 L2 to set absolute Z offset in WCS (persists in EEPROM)
+            self.sendGCode(f"G10 L2 P1 Z{wcoz:g}")
             self.app.mcontrol.viewParameters()
             self.event_generate("<<CanvasFocus>>")
         except ValueError:
@@ -2488,7 +2495,14 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
     def setTLO1(self, index, event=None):
         try:
             tlo = float(self.tlo1[index].get())
-            self.sendGCode(f"G43.1Z{tlo:g}")
+            # Get current machine position Z
+            current_mz = float(CNC.vars.get("mz", 0.0))
+            # Calculate absolute WCS Z offset: machine position - TLO
+            # This gives the machine coordinate where work Z=0 should be
+            wcoz = current_mz - tlo
+            print(f"DEBUG setTLO1[{index}]: current_mz={current_mz}, tlo={tlo}, wcoz={wcoz}")
+            # Use G10 L2 to set absolute Z offset in WCS (persists in EEPROM)
+            self.sendGCode(f"G10 L2 P1 Z{wcoz:g}")
             self.app.mcontrol.viewParameters()
             self.event_generate("<<CanvasFocus>>")
         except ValueError:
@@ -2672,6 +2686,12 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             return False
         
         print("ATCa");
+
+        # Get old tool TLO from table for WCS offset calculation
+        try:
+            old_tool_tlo = float(self.tlo1[cur_tool - 1].get()) if cur_tool > 0 else 0.0
+        except Exception:
+            old_tool_tlo = 0.0
 
         # measure current tool (skip entirely if update_only)
         if not update_only:
@@ -2900,9 +2920,23 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                             return False
                         final_tlo = expected_new
 
-                # send G43.1 to set TLO for new tool first
-                self.sendGCode(f"G43.1Z{final_tlo:g}")
-                CNC.vars["TLO"] = final_tlo
+                # Get current machine and work position Z
+                current_mz = float(CNC.vars.get("mz", 0.0))
+                current_wz = float(CNC.vars.get("wz", 0.0))
+                # Calculate WCS Z offset to preserve work position relative to workpiece
+                # Current WCS offset = mz - wz, then adjust for tool change
+                # wcoz_new = wcoz_old - old_tlo + new_tlo
+                wcoz = current_mz - current_wz - old_tool_tlo + final_tlo
+                print(f"DEBUG setTool auto: current_mz={current_mz}, current_wz={current_wz}, old_tool_tlo={old_tool_tlo}, final_tlo={final_tlo}, wcoz={wcoz}")
+                # Use G10 L2 to set absolute Z offset in WCS (persists in EEPROM)
+                gcode_cmd = f"G10 L2 P1 Z{wcoz:g}"
+                print(f"DEBUG: About to send G-code: {gcode_cmd}")
+                # Use run_lines_and_wait to send during program run (sendGCode blocked by self.running)
+                ok = run_lines_and_wait(self.app, [gcode_cmd, "%wait"], wait_before=5, wait_after=3.0)
+                if not ok:
+                    print(f"WARNING: Failed to send G10 command: {gcode_cmd}")
+                print(f"DEBUG: G-code sent: {gcode_cmd}")
+                print("setting wz to %f" % (wcoz));
 
                 # Only after TLO is set, update the tool number
                 CNC.vars["tool"] = new_tool
@@ -2993,9 +3027,22 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                             return False
                         final_tlo = expected_new
 
-                # Send G43.1 to set TLO for new tool first
-                self.sendGCode(f"G43.1Z{final_tlo:g}")
-                CNC.vars["TLO"] = final_tlo
+                # Get current machine and work position Z
+                current_mz = float(CNC.vars.get("mz", 0.0))
+                current_wz = float(CNC.vars.get("wz", 0.0))
+                # Calculate WCS Z offset to preserve work position relative to workpiece
+                # Current WCS offset = mz - wz, then adjust for tool change
+                # wcoz_new = wcoz_old - old_tlo + new_tlo
+                wcoz = current_mz - current_wz - old_tool_tlo + final_tlo
+                print(f"DEBUG setTool manual: current_mz={current_mz}, current_wz={current_wz}, old_tool_tlo={old_tool_tlo}, final_tlo={final_tlo}, wcoz={wcoz}")
+                # Use G10 L2 to set absolute Z offset in WCS (persists in EEPROM)
+                gcode_cmd = f"G10 L2 P1 Z{wcoz:g}"
+                print(f"DEBUG: About to send G-code: {gcode_cmd}")
+                # Use run_lines_and_wait to send during program run (sendGCode blocked by self.running)
+                ok = run_lines_and_wait(self.app, [gcode_cmd, "%wait"], wait_before=5, wait_after=3.0)
+                if not ok:
+                    print(f"WARNING: Failed to send G10 command: {gcode_cmd}")
+                print(f"DEBUG: G-code sent: {gcode_cmd}")
 
                 # Only after TLO is set, update the tool number
                 CNC.vars["tool"] = new_tool
@@ -3086,7 +3133,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             self.units.set(UNITS[CNC.vars["units"]])
             self.distance.set(DISTANCE_MODE[CNC.vars["distance"]])
             self.plane.set(PLANE[CNC.vars["plane"]])
-            self.tlo.set(str(CNC.vars["TLO"]))
+            # TLO no longer used - managed via WCS offsets (G10 L20) instead
             self.g92.config(text=str(CNC.vars["G92"]))
         except KeyError:
             pass

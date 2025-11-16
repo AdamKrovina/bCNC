@@ -708,7 +708,6 @@ class CNC:
         "_camwx": 0.0,
         "_camwy": 0.0,
         "G": [],
-        "TLO": 0.0,
         "motion": "G0",
         "WCS": "G54",
         "plane": "G17",

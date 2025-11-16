@@ -2870,10 +2870,11 @@ class Application(Tk, Sender):
 
             # Decide whether run ended. Avoid premature runEnded() call right
             # after submitting a run if no line has yet been sent (_gcount==0).
-            try:
-                print(f"DEBUG: monitorSerial about to evaluate run end: _gcount={self._gcount} _runLines={self._runLines} queue_size={self.queue.qsize()} running={self.running} run_start={getattr(self,'_run_start_time',None)}")
-            except Exception:
-                pass
+            if(False):
+                try:
+                    print(f"DEBUG: monitorSerial about to evaluate run end: _gcount={self._gcount} _runLines={self._runLines} queue_size={self.queue.qsize()} running={self.running} run_start={getattr(self,'_run_start_time',None)}")
+                except Exception:
+                    pass
             # Grace: allow a short time for sender to dequeue first line
             grace = 0.5
             # Settle: if controller recently restarted/announced a banner, wait
