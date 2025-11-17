@@ -2920,6 +2920,19 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                 if not ok:
                     return False
 
+                # Update tool number immediately after successful load, before measurement
+                CNC.vars["tool"] = new_tool
+                self.toolEntry.set(new_tool)  # Update UI
+                if not persist_current_tool(self.app, new_tool):
+                    try:
+                        messagebox.showerror(
+                            _("ATC"),
+                            _("Fatal: failed to persist current tool to disk. Aborting ATC.")
+                        )
+                    except Exception:
+                        pass
+                    return False
+
                 # After automatic load, measure the new tool
                 measured_new = self._probeMeasure()
                 if measured_new is None:
@@ -2970,24 +2983,6 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                 print(f"DEBUG: G-code sent: {gcode_cmd}")
                 print("setting wz to %f" % (wcoz));
 
-                # Only after TLO is set, update the tool number
-                CNC.vars["tool"] = new_tool
-                self.toolEntry.set(new_tool)  # Update UI
-
-                # persist current tool (centralized). Treat inability to
-                # persist to disk as a fatal error for ATC.
-                if not persist_current_tool(self.app, new_tool):
-                    try:
-                        messagebox.showerror(
-                            _("ATC"),
-                            _(
-                                "Fatal: failed to persist current tool to disk. Aborting ATC."
-                            ),
-                        )
-                    except Exception:
-                        pass
-                    return False
-
                 # Persist TLO table change immediately when update_only active
                 if update_only:
                     try:
@@ -3019,6 +3014,19 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                         "Please remove the old tool and insert the new tool T%02d. Click OK when ready."
                     ) % new_tool,
                 )
+
+                # Update tool number immediately after manual swap confirmation, before measurement
+                CNC.vars["tool"] = new_tool
+                self.toolEntry.set(new_tool)  # Update UI
+                if not persist_current_tool(self.app, new_tool):
+                    try:
+                        messagebox.showerror(
+                            _("ATC"),
+                            _("Fatal: failed to persist current tool to disk. Aborting ATC.")
+                        )
+                    except Exception:
+                        pass
+                    return False
 
                 # After user replaced tool, measure new tool
                 measured_new = self._probeMeasure()
@@ -3076,23 +3084,6 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                     print(f"WARNING: Failed to send G10 command: {gcode_cmd}")
                 print(f"DEBUG: G-code sent: {gcode_cmd}")
 
-                # Only after TLO is set, update the tool number
-                CNC.vars["tool"] = new_tool
-                self.toolEntry.set(new_tool)  # Update UI
-                
-                # persist current tool (centralized). Treat inability to
-                # persist to disk as a fatal error for ATC.
-                if not persist_current_tool(self.app, new_tool):
-                    try:
-                        messagebox.showerror(
-                            _("ATC"),
-                            _(
-                                "Fatal: failed to persist current tool to disk. Aborting ATC."
-                            ),
-                        )
-                    except Exception:
-                        pass
-                    return False
                 if update_only:
                     try:
                         self.saveConfig()
