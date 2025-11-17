@@ -2477,15 +2477,30 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
     # ----------------------------------------------------------------------
     def setTLO(self, event=None):
         try:
-            tlo = float(self.tlo.get())
-            # Get current machine position Z
+            new_tlo = float(self.tlo.get())
+            # Get current tool and its TLO
+            cur_tool = int(CNC.vars.get("tool", 0) or 0)
+            try:
+                old_tlo = float(self.tlo1[cur_tool - 1].get()) if cur_tool > 0 else 0.0
+            except Exception:
+                old_tlo = 0.0
+            
+            # Get current machine and work position Z
             current_mz = float(CNC.vars.get("mz", 0.0))
-            # Calculate absolute WCS Z offset: machine position - TLO
-            # This gives the machine coordinate where work Z=0 should be
-            wcoz = current_mz - tlo
-            print(f"DEBUG setTLO: current_mz={current_mz}, tlo={tlo}, wcoz={wcoz}")
+            current_wz = float(CNC.vars.get("wz", 0.0))
+            # Calculate WCS Z offset: preserve work position, adjust for tool change
+            # wcoz = mz - wz - old_tlo + new_tlo
+            wcoz = current_mz - current_wz - old_tlo + new_tlo
+            print(f"DEBUG setTLO: current_mz={current_mz}, current_wz={current_wz}, old_tlo={old_tlo}, new_tlo={new_tlo}, wcoz={wcoz}")
             # Use G10 L2 to set absolute Z offset in WCS (persists in EEPROM)
             self.sendGCode(f"G10 L2 P1 Z{wcoz:g}")
+            
+            # Update tool number to 0 (manual/unknown tool)
+            CNC.vars["tool"] = 0
+            self.toolEntry.set(0)
+            if not persist_current_tool(self.app, 0):
+                print("WARNING: Failed to persist tool number 0")
+            
             self.app.mcontrol.viewParameters()
             self.event_generate("<<CanvasFocus>>")
         except ValueError:
@@ -2494,15 +2509,32 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
     # ----------------------------------------------------------------------
     def setTLO1(self, index, event=None):
         try:
-            tlo = float(self.tlo1[index].get())
-            # Get current machine position Z
+            new_tlo = float(self.tlo1[index].get())
+            new_tool = index + 1  # Table is 0-indexed, tools are 1-indexed
+            
+            # Get current tool and its TLO
+            cur_tool = int(CNC.vars.get("tool", 0) or 0)
+            try:
+                old_tlo = float(self.tlo1[cur_tool - 1].get()) if cur_tool > 0 else 0.0
+            except Exception:
+                old_tlo = 0.0
+            
+            # Get current machine and work position Z
             current_mz = float(CNC.vars.get("mz", 0.0))
-            # Calculate absolute WCS Z offset: machine position - TLO
-            # This gives the machine coordinate where work Z=0 should be
-            wcoz = current_mz - tlo
-            print(f"DEBUG setTLO1[{index}]: current_mz={current_mz}, tlo={tlo}, wcoz={wcoz}")
+            current_wz = float(CNC.vars.get("wz", 0.0))
+            # Calculate WCS Z offset: preserve work position, adjust for tool change
+            # wcoz = mz - wz - old_tlo + new_tlo
+            wcoz = current_mz - current_wz - old_tlo + new_tlo
+            print(f"DEBUG setTLO1[{index}]: current_mz={current_mz}, current_wz={current_wz}, old_tlo={old_tlo}, new_tlo={new_tlo}, wcoz={wcoz}")
             # Use G10 L2 to set absolute Z offset in WCS (persists in EEPROM)
             self.sendGCode(f"G10 L2 P1 Z{wcoz:g}")
+            
+            # Update tool number to the selected tool
+            CNC.vars["tool"] = new_tool
+            self.toolEntry.set(new_tool)
+            if not persist_current_tool(self.app, new_tool):
+                print(f"WARNING: Failed to persist tool number {new_tool}")
+            
             self.app.mcontrol.viewParameters()
             self.event_generate("<<CanvasFocus>>")
         except ValueError:
