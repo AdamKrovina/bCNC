@@ -871,8 +871,8 @@ class DirJobsFrame(CNCRibbon.PageLabelFrame):
                     s = line.strip()
                     if not s or s.startswith("#"):
                         continue
-                    # Expect format: filename,tool
-                    parts = [p.strip() for p in s.split(",", 1)]
+                    # Expect format: filename;tool
+                    parts = [p.strip() for p in s.split(";", 1)]
                     if len(parts) != 2:
                         continue
                     fn, tool_s = parts
@@ -891,10 +891,10 @@ class DirJobsFrame(CNCRibbon.PageLabelFrame):
         cfg = self._conf_path(directory)
         lines = [
             "# bCNC directory tool mapping\n",
-            "# filename,tool_number\n",
+            "# filename;tool_number\n",
         ]
         for fn, tool in mapping.items():
-            lines.append(f"{fn},{int(tool)}\n")
+            lines.append(f"{fn};{int(tool)}\n")
         with open(cfg, "w", encoding="utf-8") as f:
             f.writelines(lines)
 
