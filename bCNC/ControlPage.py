@@ -2246,8 +2246,8 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
 
         from functools import partial
         self.tlo1 = []
-        tloColCnt = 3
-        tloRowCnt = 4
+        tloColCnt = Utils.getInt("Control", "tloColCnt", 3)
+        tloRowCnt = Utils.getInt("Control", "tloRowCnt", 4)
         tloCount = tloColCnt*tloRowCnt
         tloNum = 0;
         row = row+1
@@ -2641,22 +2641,27 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         ]
         
         # Add slow approach if expected_tlo is provided and conditions are met
+        used_slow_approach = False
+        probe_distance = -60  # default probe distance
         if expected_tlo is not None and not update_only:
             toolprobez = CNC.vars.get("toolprobez", 0.0)
-            # Calculate target Z: expected_tlo + toolprobez + 5mm reserve
-            target_z = expected_tlo - toolprobez + 5.0
+            # Calculate target Z: expected_tlo - toolprobez + reserve
+            target_z = expected_tlo - toolprobez + 2.0
             # Only approach if target is below toolprobez (tool is shorter than probe position)
             if target_z < 0.0: # only if below current probe Z - only downwards
                 print("_probeMeasure adding slow approach Z (relative) %.3f" % (target_z))
                 lines.extend([
-                    f"G54 G1 Z{target_z:.3f} F200",
+                    "g91",
+                    f"G54 G1 Z{target_z:.3f} F400",
                     "%wait",
                 ])
+                used_slow_approach = True
+                probe_distance = -10  # use shorter probe distance after slow approach
         
         lines.extend([
             # single probe pass at configured probe feed
             "g91",
-            "[prbcmd] f[70] z[-60]",
+            f"[prbcmd] f[70] z[{probe_distance}]",
             "g4 p1",
             "%wait",
             "g90",
