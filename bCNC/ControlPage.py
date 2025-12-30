@@ -2624,7 +2624,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
         self.atc_tol = Utils.getFloat("ATC", "tol", 0.5)
 
     # ----------------------------------------------------------------------
-    def _probeMeasure(self, timeout=100.0):
+    def _probeMeasure(self, timeout=100.0, expected_tlo=None, update_only=False):
         print("_probeMeasure called")
         self.app.log.put((Sender.Sender.MSG_OK, "ATC: _probeMeasure called"))
         # Run a probe sequence to measure tool on the tool setter.
@@ -2638,6 +2638,22 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             "%wait",
             "g53 g0 z[toolprobez]",
             "%wait",
+        ]
+        
+        # Add slow approach if expected_tlo is provided and conditions are met
+        if expected_tlo is not None and not update_only:
+            toolprobez = CNC.vars.get("toolprobez", 0.0)
+            # Calculate target Z: expected_tlo + toolprobez + 5mm reserve
+            target_z = expected_tlo - toolprobez + 5.0
+            # Only approach if target is below toolprobez (tool is shorter than probe position)
+            if target_z < 0.0: # only if below current probe Z - only downwards
+                print("_probeMeasure adding slow approach Z (relative) %.3f" % (target_z))
+                lines.extend([
+                    f"G54 G1 Z{target_z:.3f} F200",
+                    "%wait",
+                ])
+        
+        lines.extend([
             # single probe pass at configured probe feed
             "g91",
             "[prbcmd] f[70] z[-60]",
@@ -2649,7 +2665,7 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
             # export measured probe z to a global variable we can poll
             "%global atc_prbz; atc_prbz=prbz",
             "%update atc_prbz",
-        ]
+        ])
 
         ok = run_lines_and_wait(self.app, lines, wait_before=10, wait_after=timeout)
         if not ok:
@@ -2727,7 +2743,13 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
 
         # measure current tool (skip entirely if update_only)
         if not update_only:
-            measured_old = self._probeMeasure()
+            # Get expected TLO for current tool from table
+            try:
+                expected_old_tlo = float(self.tlo1[cur_tool - 1].get()) if cur_tool > 0 else None
+            except Exception:
+                expected_old_tlo = None
+            
+            measured_old = self._probeMeasure(expected_tlo=expected_old_tlo, update_only=False)
             if measured_old is None:
                 messagebox.showerror(_("ATC"), _("Failed to measure current tool"))
                 return False
@@ -2934,7 +2956,13 @@ class StateFrame(CNCRibbon.PageExLabelFrame):
                     return False
 
                 # After automatic load, measure the new tool
-                measured_new = self._probeMeasure()
+                # Get expected TLO for new tool from table
+                try:
+                    expected_new_tlo = float(self.tlo1[new_tool - 1].get())
+                except Exception:
+                    expected_new_tlo = None
+                
+                measured_new = self._probeMeasure(expected_tlo=expected_new_tlo, update_only=update_only)
                 if measured_new is None:
                     messagebox.showerror(_("ATC"), _("Failed to measure new tool"))
                     return False
